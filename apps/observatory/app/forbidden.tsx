@@ -1,0 +1,1 @@
+export default function Forbidden() { return <main className="access-page"><h1>403 · Access denied</h1><p>Your email is not in OBSERVATORY_ADMIN_EMAILS.</p><a href="/auth/sign-in">Sign in with an allowlisted account</a></main>; }

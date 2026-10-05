@@ -1,0 +1,14 @@
+{
+  "name": "@minnow/db",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./types": "./src/types.ts" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx --test tests/*.test.ts",
+    "migrate": "node --env-file-if-exists=../../apps/web/.env.local --import tsx scripts/migrate.ts"
+  },
+  "dependencies": { "@neondatabase/serverless": "^1.2.0" },
+  "devDependencies": { "@types/node": "^22.15.30", "tsx": "^4.20.3", "typescript": "^5.8.3" }
+}

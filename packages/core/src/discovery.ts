@@ -1,0 +1,58 @@
+import type { Preferences, SourceName } from './contracts';
+import { canonicalUrl, companyKey, isJobUrl, publicUrl, sourceFor } from './urls';
+
+export interface SearchHit { title: string; snippet: string; url: string; date?: string; }
+export interface SearchQuery { name: string; query: string; domains?: string; exclude?: string; }
+export interface Candidate extends SearchHit { source: SourceName; priority: number; }
+
+const domains: Partial<Record<SourceName, string>> = {
+  greenhouse: 'boards.greenhouse.io,job-boards.greenhouse.io',
+  lever: 'jobs.lever.co', ashby: 'jobs.ashbyhq.com',
+  portal: 'builtin.com,wellfound.com,internshala.com,weworkremotely.com,remotive.com',
+};
+const allBoards = `${Object.values(domains).join(',')},linkedin.com,facebook.com,youtube.com,pinterest.com,reddit.com,quora.com`;
+
+export function buildQueries(prefs: Preferences): SearchQuery[] {
+  const level = { any: '', intern: 'internship intern', new_grad: 'new graduate entry level', mid: '', senior: 'senior' }[prefs.seniority];
+  const place = [prefs.location, prefs.workMode === 'remote' ? 'remote' : ''].filter(Boolean).join(' ');
+  const base = `${prefs.role} ${prefs.profession} ${level} ${place}`.trim().replace(/\s+/g, ' ');
+  return [...new Set(prefs.sources)].map(source => ({
+    name: { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', portal: 'Public job boards' }[source],
+    query: `${base} ${source === 'careers' ? 'careers open positions apply' : 'jobs apply'}`,
+    domains: domains[source], exclude: source === 'careers' ? allBoards : 'linkedin.com',
+  }));
+}
+
+export function discover(hits: SearchHit[], prefs: Preferences): Candidate[] {
+  const unique = new Map<string, Candidate>();
+  for (const hit of hits) {
+    const url = publicUrl(hit.url);
+    if (!url) continue;
+    const host = new URL(url).hostname;
+    if (/(^|\.)(linkedin\.com|facebook\.com|youtube\.com|reddit\.com|quora\.com|pinterest\.com)$/.test(host)) continue;
+    if (/\/(blog|news|articles|guides|login|signin|sign-in)\b/i.test(new URL(url).pathname)) continue;
+    if (/\b(how to|interview questions|resume tips|top \d+|best \d+)\b/i.test(hit.title)) continue;
+    const source = sourceFor(url);
+    if (!prefs.sources.includes(source)) continue;
+    if (source === 'careers' && !isJobUrl(url) && !/career|hiring|jobs|open positions/i.test(`${hit.title} ${url}`)) continue;
+    const candidate = { ...hit, url, source, priority: (isJobUrl(url) ? 30 : 10) + (source !== 'portal' ? 5 : 0) };
+    unique.set(canonicalUrl(url), candidate);
+  }
+  for (const url of prefs.careersUrls) {
+    if (publicUrl(url)) unique.set(canonicalUrl(url), { url, title: 'Your careers page', snippet: '', source: sourceFor(url), priority: 60 });
+  }
+  return diversify([...unique.values()], 12);
+}
+
+export function diversify<T extends { url: string; priority: number }>(items: T[], limit: number): T[] {
+  const sorted = [...items].sort((a, b) => b.priority - a.priority);
+  const selected: T[] = [];
+  const counts = new Map<string, number>();
+  while (selected.length < limit && sorted.length) {
+    sorted.sort((a, b) => (b.priority - (counts.get(companyKey(b.url)) ?? 0) * 20) - (a.priority - (counts.get(companyKey(a.url)) ?? 0) * 20));
+    const next = sorted.shift()!;
+    selected.push(next);
+    counts.set(companyKey(next.url), (counts.get(companyKey(next.url)) ?? 0) + 1);
+  }
+  return selected;
+}

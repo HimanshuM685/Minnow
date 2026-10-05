@@ -1,0 +1,397 @@
+{
+  "communities": {
+    "0": [
+      "package",
+      "package_dependencies",
+      "package_dependencies_dotenv",
+      "package_dependencies_entities",
+      "package_dependencies_express",
+      "package_dependencies_lucide_react",
+      "package_dependencies_marked",
+      "package_dependencies_react",
+      "package_dependencies_react_dom",
+      "package_dependencies_zod",
+      "package_engines",
+      "package_engines_node",
+      "package_name",
+      "package_private",
+      "package_scripts",
+      "package_scripts_build",
+      "package_scripts_check",
+      "package_scripts_dev",
+      "package_scripts_start",
+      "package_scripts_test",
+      "package_scripts_test_ui",
+      "package_type",
+      "package_version",
+      "playwright_config",
+      "ref_concurrently",
+      "ref_entities",
+      "ref_esbuild",
+      "ref_marked",
+      "ref_playwright_test",
+      "ref_react_dom",
+      "ref_tsx",
+      "ref_types_express",
+      "ref_types_node",
+      "ref_types_react",
+      "ref_types_react_dom",
+      "ref_typescript",
+      "ref_vite",
+      "ref_vitejs_plugin_react",
+      "vite_config"
+    ],
+    "1": [
+      "ref_node_net",
+      "server_discovery",
+      "server_discovery_buildqueries",
+      "server_discovery_candidate",
+      "server_discovery_discover",
+      "server_discovery_diversify",
+      "server_discovery_domains",
+      "server_discovery_searchhit",
+      "server_extraction",
+      "server_extraction_agentitem",
+      "server_extraction_cleantitle",
+      "server_extraction_companyfrom",
+      "server_extraction_excerpt",
+      "server_extraction_extractagent",
+      "server_extraction_extractpage",
+      "server_extraction_inferseniority",
+      "server_extraction_infervisa",
+      "server_extraction_inferworkmode",
+      "server_extraction_isclosed",
+      "server_extraction_locationfrom",
+      "server_extraction_makelisting",
+      "server_extraction_plain",
+      "server_pipeline",
+      "server_pipeline_emptystats",
+      "server_pipeline_runsearch",
+      "server_pipeline_runsearch_readbatch",
+      "server_urls",
+      "server_urls_canonicalurl",
+      "server_urls_companykey",
+      "server_urls_isjoburl",
+      "server_urls_publicurl",
+      "server_urls_sourcefor",
+      "shared_contracts_sourcename",
+      "tests_core_test",
+      "tests_core_test_job",
+      "tests_core_test_prefs",
+      "tests_core_test_start"
+    ],
+    "2": [
+      "ref_lucide_react",
+      "ref_react",
+      "shared_contracts_defaultpreferences",
+      "shared_contracts_labels",
+      "shared_contracts_listing",
+      "shared_contracts_preferencesschema",
+      "src_app",
+      "src_app_app",
+      "src_app_examples",
+      "src_app_storedpreferencesschema",
+      "src_components_brand",
+      "src_components_brand_currentillustration",
+      "src_components_brand_fish",
+      "src_components_dialog",
+      "src_components_dialog_dialog",
+      "src_components_howitworks",
+      "src_components_howitworks_howitworks",
+      "src_components_jobcard",
+      "src_components_jobcard_jobcard",
+      "src_components_jobdetails",
+      "src_components_jobdetails_jobdetails",
+      "src_components_preferencesform",
+      "src_components_preferencesform_preferencesform",
+      "src_components_sourceactivity",
+      "src_components_sourceactivity_sourceactivity",
+      "src_lib_format",
+      "src_lib_format_companycolor",
+      "src_lib_format_datetime",
+      "src_lib_format_initials",
+      "src_lib_format_relativetime",
+      "src_lib_format_validapplyurl",
+      "src_main",
+      "src_styles"
+    ],
+    "3": [
+      "server_discovery_searchquery",
+      "server_tinyfish",
+      "server_tinyfish_agentevent",
+      "server_tinyfish_agentoutputschema",
+      "server_tinyfish_fetchfailure",
+      "server_tinyfish_fetchpage",
+      "server_tinyfish_fetchresponse",
+      "server_tinyfish_httperror",
+      "server_tinyfish_reservesearch",
+      "server_tinyfish_stringfield",
+      "server_tinyfish_timestamps",
+      "server_tinyfish_tinyfishclient",
+      "server_tinyfish_tinyfishclient_agent",
+      "server_tinyfish_tinyfishclient_cancel",
+      "server_tinyfish_tinyfishclient_constructor",
+      "server_tinyfish_tinyfishclient_fetchpages",
+      "server_tinyfish_tinyfishclient_json",
+      "server_tinyfish_tinyfishclient_search",
+      "server_tinyfish_tinyfisherror",
+      "server_tinyfish_tinyfisherror_constructor",
+      "shared_contracts_preferences",
+      "shared_contracts_runstats",
+      "shared_sse",
+      "shared_sse_readsse",
+      "shared_sse_readsse_message",
+      "src_components_preferencesform_props"
+    ],
+    "4": [
+      "ref_node_assert",
+      "ref_node_test",
+      "ref_zod",
+      "shared_contracts",
+      "shared_contracts_listingschema",
+      "shared_contracts_searchevent",
+      "shared_contracts_searchresult",
+      "shared_contracts_seniorities",
+      "shared_contracts_sourcenames",
+      "shared_contracts_sourcereport",
+      "shared_contracts_stage",
+      "shared_contracts_visasignals",
+      "shared_contracts_workmodes",
+      "src_hooks_usesearch",
+      "src_hooks_usesearch_usesearch",
+      "src_hooks_usesearch_visitsschema",
+      "src_lib_storage",
+      "src_lib_storage_preferenceidentity",
+      "src_lib_storage_readstored",
+      "src_lib_storage_usepersistentstate",
+      "src_lib_storage_writestored",
+      "tests_pipeline_test",
+      "tests_pipeline_test_start",
+      "tests_ui_workspace_spec",
+      "tests_ui_workspace_spec_fixture"
+    ],
+    "5": [
+      "ref_dotenv",
+      "ref_express",
+      "ref_node_crypto",
+      "ref_node_path",
+      "server_cache",
+      "server_cache_cachedsearch",
+      "server_cache_cachesearch",
+      "server_cache_entries",
+      "server_cache_preferencekey",
+      "server_index",
+      "server_index_active",
+      "server_index_app",
+      "server_index_config",
+      "server_index_numbersetting",
+      "server_index_port",
+      "server_index_rate",
+      "server_index_requestschema",
+      "server_index_server",
+      "server_urls_hash"
+    ],
+    "6": [
+      "tsconfig",
+      "tsconfig_compileroptions",
+      "tsconfig_compileroptions_esmoduleinterop",
+      "tsconfig_compileroptions_isolatedmodules",
+      "tsconfig_compileroptions_jsx",
+      "tsconfig_compileroptions_lib",
+      "tsconfig_compileroptions_module",
+      "tsconfig_compileroptions_moduleresolution",
+      "tsconfig_compileroptions_noemit",
+      "tsconfig_compileroptions_resolvejsonmodule",
+      "tsconfig_compileroptions_skiplibcheck",
+      "tsconfig_compileroptions_strict",
+      "tsconfig_compileroptions_target",
+      "tsconfig_compileroptions_types",
+      "tsconfig_include"
+    ],
+    "7": [
+      "package_devdependencies",
+      "package_devdependencies_concurrently",
+      "package_devdependencies_esbuild",
+      "package_devdependencies_playwright_test",
+      "package_devdependencies_tsx",
+      "package_devdependencies_types_express",
+      "package_devdependencies_types_node",
+      "package_devdependencies_types_react",
+      "package_devdependencies_types_react_dom",
+      "package_devdependencies_typescript",
+      "package_devdependencies_vite",
+      "package_devdependencies_vitejs_plugin_react"
+    ],
+    "8": [
+      "server_geography",
+      "server_geography_countryaliases",
+      "server_geography_countryfromlocation",
+      "server_matching",
+      "server_matching_dedupe",
+      "server_matching_identity",
+      "server_matching_locationfit",
+      "server_matching_matchlistings",
+      "server_matching_normalize",
+      "server_matching_rolefit",
+      "server_matching_rolewords",
+      "server_matching_stopwords"
+    ]
+  },
+  "cohesion": {
+    "0": 0.05263157894736842,
+    "1": 0.17867867867867868,
+    "2": 0.17613636363636365,
+    "3": 0.13846153846153847,
+    "4": 0.13666666666666666,
+    "5": 0.13450292397660818,
+    "6": 0.13333333333333333,
+    "7": 0.16666666666666666,
+    "8": 0.36363636363636365
+  },
+  "gods": [
+    {
+      "id": "server_extraction_extractpage",
+      "label": "extractPage()",
+      "degree": 19
+    },
+    {
+      "id": "server_pipeline_runsearch",
+      "label": "runSearch()",
+      "degree": 19
+    },
+    {
+      "id": "shared_contracts_preferences",
+      "label": "Preferences",
+      "degree": 14
+    },
+    {
+      "id": "src_app_app",
+      "label": "App()",
+      "degree": 13
+    },
+    {
+      "id": "tsconfig_compileroptions",
+      "label": "compilerOptions",
+      "degree": 13
+    },
+    {
+      "id": "server_urls_canonicalurl",
+      "label": "canonicalUrl()",
+      "degree": 12
+    },
+    {
+      "id": "server_urls_publicurl",
+      "label": "publicUrl()",
+      "degree": 11
+    },
+    {
+      "id": "shared_contracts_listing",
+      "label": "Listing",
+      "degree": 10
+    },
+    {
+      "id": "server_tinyfish_tinyfishclient",
+      "label": "TinyFishClient",
+      "degree": 10
+    },
+    {
+      "id": "server_urls_isjoburl",
+      "label": "isJobUrl()",
+      "degree": 10
+    }
+  ],
+  "surprises": [
+    {
+      "source": "Props",
+      "target": "Preferences",
+      "source_files": [
+        "src/components/PreferencesForm.tsx",
+        "shared/contracts.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories; peripheral node `Props` unexpectedly reaches hub `Preferences`"
+    },
+    {
+      "source": "useSearch()",
+      "target": "readSSE()",
+      "source_files": [
+        "src/hooks/useSearch.ts",
+        "shared/sse.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "Candidate",
+      "target": "SourceName",
+      "source_files": [
+        "server/discovery.ts",
+        "shared/contracts.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    },
+    {
+      "source": "runSearch()",
+      "target": "TinyFishClient",
+      "source_files": [
+        "server/pipeline.ts",
+        "server/tinyfish.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    },
+    {
+      "source": "runSearch()",
+      "target": "TinyFishError",
+      "source_files": [
+        "server/pipeline.ts",
+        "server/tinyfish.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    }
+  ],
+  "questions": [
+    {
+      "type": "bridge_node",
+      "question": "Why does `zod` connect `Community 4` to `Community 0`, `Community 1`, `Community 2`, `Community 5`?",
+      "why": "High betweenness centrality (0.127) - this node is a cross-community bridge."
+    },
+    {
+      "type": "verify_inferred",
+      "question": "Are the 2 inferred relationships involving `runSearch()` (e.g. with `.agent()` and `.search()`) actually correct?",
+      "why": "`runSearch()` has 2 INFERRED edges - model-reasoned connections that need verification."
+    },
+    {
+      "type": "isolated_nodes",
+      "question": "What connects `AgentEvent`, `FetchFailure`, `dotenv` to the rest of the system?",
+      "why": "72 weakly-connected nodes found - possible documentation gaps or missing edges."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `Community 0` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.05263157894736842 - nodes in this community are weakly interconnected."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `devDependencies` connect `Community 7` to `Community 0`?",
+      "why": "High betweenness centrality (0.092) - this node is a cross-community bridge."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `Community 3` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.13846153846153847 - nodes in this community are weakly interconnected."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `Community 4` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.13666666666666666 - nodes in this community are weakly interconnected."
+    }
+  ]
+}

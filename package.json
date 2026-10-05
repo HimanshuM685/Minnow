@@ -1,0 +1,30 @@
+{
+  "name": "minnow-monorepo",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace=@minnow/web",
+    "dev:observatory": "npm run dev --workspace=@minnow/observatory",
+    "dev": "concurrently -k -n web,observatory -c cyan,magenta \"npm run dev:web\" \"npm run dev:observatory\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:ui": "playwright test",
+    "db:migrate": "npm run migrate --workspace=@minnow/db"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@playwright/test": "^1.63.0",
+    "concurrently": "^9.1.2",
+    "jszip": "^3.10.2",
+    "pdf-lib": "^1.17.1",
+    "typescript": "^5.8.3"
+  }
+}
