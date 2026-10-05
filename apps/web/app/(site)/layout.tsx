@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { Fish } from '@/components/brand';
 import { SiteHeader } from '@/components/site-header';
-import { auth } from '@/lib/auth/server';
+import { getUser } from '@/lib/auth/session';
 import { signOut } from '@/app/auth/actions';
 import '../product.css';
 import '../globals.css';
@@ -9,13 +9,7 @@ import '../globals.css';
 export const dynamic = 'force-dynamic';
 
 export default async function SiteLayout({ children }: { children: React.ReactNode }) {
-  let user = null;
-  try {
-    const { data: session } = await auth.getSession();
-    user = session?.user ?? null;
-  } catch {
-    user = null;
-  }
+  const user = await getUser();
 
   return (
     <>
