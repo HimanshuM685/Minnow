@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ensureProfile, getWallet } from '@minnow/db';
+import { currentWallet } from '@/lib/wallet';
 import { requireUser } from '@/lib/auth/session';
 import { signOut } from '@/app/auth/actions';
 import { AppSidebar } from '@/components/app-sidebar';
@@ -11,14 +11,13 @@ export const dynamic = 'force-dynamic';
 // Dashboard shell: its own header and sidebar, separate from the marketing layout in (site).
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
-  await ensureProfile(user.id, user.name);
-  const wallet = await getWallet(user.id);
+  const wallet = await currentWallet(user);
   return <>
     <header className="site-header solid">
       <div className="header-inner">
         <Link href="/dashboard" className="wordmark"><span className="brand-mark"><Fish /></span><span>minnow<span className="brand-dot">.</span></span></Link>
         <div className="public-nav">
-          <Link href="/credits" className="nav-credits">Credits · {wallet?.tinyfish_key ? 'own key' : wallet?.credits ?? 0}</Link>
+          <Link href="/credits" className="nav-credits">Credits · {wallet.hasKey ? 'own key' : wallet.credits}</Link>
           <Link href="/dashboard/settings" className="nav-user-email" title="Settings">{user.name || user.email}</Link>
           <form action={signOut} className="nav-signout-form"><button type="submit" className="nav-signout-btn">Sign out</button></form>
         </div>

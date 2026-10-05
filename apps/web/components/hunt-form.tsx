@@ -7,6 +7,8 @@ import type { PreferenceRow, SearchRow } from '@minnow/db/types';
 import { readSSE } from '@minnow/core/sse';
 import { PROFESSIONS, SKILLS } from '@/lib/suggestions';
 import { savePreferences } from '@/app/(dashboard)/dashboard/actions';
+// An error reported by the server (final), as opposed to a dropped connection (recoverable).
+class HuntFailed extends Error {}
 export function HuntForm({ initial, skills, latest, configured, credits }: { initial: PreferenceRow; skills: string[]; latest: SearchRow | null; configured: boolean; credits: number | null }) {
   const router = useRouter();
   const [value, setValue] = useState(initial);
@@ -27,23 +29,53 @@ export function HuntForm({ initial, skills, latest, configured, credits }: { ini
     catch { setError('Could not save preferences. Check the database connection.'); return false; }
     finally { setSaving(false); }
   }
+  type HuntEvent = { type: string; stage?: string; message?: string; counts?: typeof counts; searchId?: string; found?: number };
+  const finish = (next: { counts: typeof counts; found?: number }) => {
+    setCounts(next.counts); setStage('done');
+    setMessage(next.found === 0 ? 'No matching openings were found this time. This hunt was not charged. Try a broader role or location.' : 'Your shortlist is ready.');
+  };
+  // The stream can drop (network, platform limit) while the hunt keeps running on the server: check its real status.
+  async function waitForHunt(searchId: string) {
+    setMessage('Connection interrupted. Checking your hunt…');
+    for (let i = 0; i < 100; i++) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      try {
+        const response = await fetch(`/api/hunt?id=${searchId}`, { cache: 'no-store' });
+        if (response.status === 401) throw new Error('Your session expired. Sign in again.');
+        if (!response.ok) continue;
+        const run = await response.json() as { status: string; error?: string; found: number; counts: NonNullable<typeof counts> };
+        if (run.status === 'done') { finish({ counts: run.counts, found: run.found }); return; }
+        if (run.status === 'error') throw new HuntFailed(run.error ?? 'The hunt could not finish.');
+      } catch (e) { if (e instanceof HuntFailed || (e instanceof Error && e.message.startsWith('Your session'))) throw e; }
+    }
+    throw new Error('The hunt is still running. Check your Shortlist in a minute; you will not be charged twice.');
+  }
   async function run(refresh: boolean) {
     if (!await save()) return;
     setBusy(true); setError(''); setCounts(null); setStage('search'); setMessage('Searching live careers pages…');
+    let searchId = '';
     try {
-      const response = await fetch('/api/hunt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh }) });
-      if (!response.ok) { const body = await response.json(); throw new Error(body.error ?? 'Hunt failed.'); }
+      let response: Response;
+      try { response = await fetch('/api/hunt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh }) }); }
+      catch { throw new Error('Could not reach Minnow. Check your connection and try again. Nothing was charged.'); }
+      if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new Error(body.error ?? `The server returned ${response.status}. Please try again.`); }
       if (!response.body) throw new Error('No progress stream received.');
       let done = false;
-      for await (const raw of readSSE(response.body)) {
-        const event = raw as { type: string; stage?: string; message?: string; counts?: typeof counts; searchId?: string };
-        if (event.type === 'progress') { setStage(event.stage ?? ''); setMessage(event.message ?? ''); }
-        if (event.type === 'error') throw new Error(event.message ?? 'The hunt could not finish.');
-        if (event.type === 'complete') { done = true; setCounts(event.counts ?? null); setStage('done'); setMessage('Your shortlist is ready.'); router.refresh(); break; }
+      try {
+        for await (const raw of readSSE(response.body)) {
+          const event = raw as HuntEvent;
+          if (event.type === 'started') searchId = event.searchId ?? '';
+          if (event.type === 'progress') { setStage(event.stage ?? ''); setMessage(event.message ?? ''); }
+          if (event.type === 'error') throw new HuntFailed(event.message ?? 'The hunt could not finish.');
+          if (event.type === 'complete') { done = true; finish({ counts: event.counts ?? null, found: event.found }); break; }
+        }
+      } catch (e) { if (e instanceof HuntFailed) throw e; /* otherwise the connection dropped */ }
+      if (!done) {
+        if (!searchId) throw new Error('The connection closed before the hunt started. Nothing was charged. Please try again.');
+        await waitForHunt(searchId);
       }
-      if (!done) throw new Error('The stream ended early. Your trace was retained; retry the hunt.');
-    } catch (e) { setError(e instanceof Error ? e.message : 'Hunt failed.'); }
-    finally { setBusy(false); }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Hunt failed.'); setStage(''); setMessage(''); }
+    finally { setBusy(false); router.refresh(); }
   }
   const isFirstTime = !latest && !initial.role;
   return (

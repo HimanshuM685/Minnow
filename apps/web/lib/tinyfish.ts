@@ -98,10 +98,10 @@ export class TinyFishClient {
     if (urls.length > 10) throw new Error('Fetch batches cannot exceed 10 URLs.');
     const data = await this.json('https://api.fetch.tinyfish.ai', {
       method: 'POST', body: JSON.stringify({
-        urls, format: 'markdown', links: true, ttl: 0, per_url_timeout_ms: 45_000,
+        urls, format: 'markdown', links: true, ttl: 0, per_url_timeout_ms: 40_000,
         purpose: `Read live job openings for ${prefs.role}. Preserve titles, company names, location, work mode, experience requirements, sponsorship statements and application links.`,
       }),
-    }, 150_000) as FetchResponse;
+    }, 75_000) as FetchResponse;
     if (!Array.isArray(data.results) || !Array.isArray(data.errors)) throw new TinyFishError('TinyFish Fetch returned an unexpected response.');
     this.stats.fetchedPages += data.results.length;
     return data;

@@ -8,11 +8,14 @@ export function emptyStats(): RunStats {
 export async function runSearch(
   prefs: Preferences, runId: string, key: string, signal: AbortSignal,
   emit: (event: SearchEvent) => void,
-  config: { maxAgentRuns: number; agentDuration: number; skippedHosts?: string[]; stats?: RunStats },
+  config: { maxAgentRuns: number; agentDuration: number; budgetMs?: number; skippedHosts?: string[]; stats?: RunStats },
 ): Promise<SearchResult> {
   const started = Date.now();
   const stats = config.stats ?? emptyStats();
-  const client = new TinyFishClient(key, stats, signal);
+  // `signal` is the user/hard abort; `budget` is a soft deadline. When it expires in-flight TinyFish calls are cut
+  // and reported as source errors, and the run still ranks whatever was gathered instead of failing outright.
+  const budget = AbortSignal.timeout(config.budgetMs ?? 200_000);
+  const client = new TinyFishClient(key, stats, AbortSignal.any([signal, budget]));
   const reports: SourceReport[] = [];
   const raw: Listing[] = [];
   const stale = new Set<string>();
@@ -25,6 +28,7 @@ export async function runSearch(
   const hits: SearchHit[] = [];
   let successes = 0;
   let authError: TinyFishError | undefined;
+  let lastError: TinyFishError | undefined;
   // The bounded source-family queries run in parallel before one selected Fetch batch.
     await Promise.all(queries.map(async query => {
       try {
@@ -35,13 +39,13 @@ export async function runSearch(
         report({ url: searchUrl.href, name: query.name, stage: 'search', status: found.length ? 'ok' : 'empty', message: found.length ? `${found.length} links discovered` : 'No links returned for these preferences', count: found.length });
       } catch (error) {
         signal.throwIfAborted();
-        if (error instanceof TinyFishError && error.status === 401) authError = error;
+        if (error instanceof TinyFishError) { lastError = error; if (error.status === 401) authError = error; }
         report({ url: 'https://api.search.tinyfish.ai', name: query.name, stage: 'search', status: 'error', message: error instanceof TinyFishError ? error.message : 'Search timed out or could not connect. Try again.', count: 0 });
       }
     }));
   if (authError) throw authError;
   signal.throwIfAborted();
-  if (!successes && !prefs.careersUrls.length) throw new TinyFishError('No search source completed. Check the source activity below and retry.');
+  if (!successes && !prefs.careersUrls.length) throw lastError && [402, 403, 429].includes(lastError.status) ? lastError : new TinyFishError('No search source completed. Check the source activity below and retry.');
   const discovered = discover(hits, prefs);
   const candidates = discovered.filter(item => !(config.skippedHosts ?? []).some(host => new URL(item.url).hostname === host || new URL(item.url).hostname.endsWith(`.${host}`))).slice(0, 10);
   for (const candidate of discovered) if (!candidates.includes(candidate)) {
@@ -88,7 +92,9 @@ export async function runSearch(
 
   if (candidates.length) {
     progress('fetch', `Reading ${candidates.length} live job and careers pages…`);
-    await readBatch(candidates.map(item => item.url));
+    // Small parallel batches keep one slow page from holding the whole read.
+    const urls = candidates.map(item => item.url);
+    await Promise.all([urls.slice(0, 5), urls.slice(5)].filter(batch => batch.length).map(readBatch));
   }
 
   const scanLimit = prefs.useAgent ? config.maxAgentRuns : 0;
@@ -98,14 +104,19 @@ export async function runSearch(
   }
   const agentPages = diversify([...distinctBoards.values()], scanLimit);
   const agentCompanies = new Set<string>();
-  for (const candidate of agentPages) {
+  // Agent scans run concurrently and only with the time actually left in the budget.
+  const remainingSeconds = Math.floor(((config.budgetMs ?? 200_000) - (Date.now() - started)) / 1000) - 20;
+  const agentSeconds = Math.min(config.agentDuration, remainingSeconds);
+  const scans = agentSeconds >= 30 ? agentPages : [];
+  if (agentPages.length && !scans.length) progress('agent', 'Skipping Agent scans: not enough time left in this hunt.');
+  await Promise.all(scans.map(async candidate => {
     signal.throwIfAborted();
-    if (agentCompanies.has(companyKey(candidate.url))) continue;
+    if (agentCompanies.has(companyKey(candidate.url))) return;
     agentCompanies.add(companyKey(candidate.url));
     const host = new URL(candidate.url).hostname;
     progress('agent', `Scanning ${host} with TinyFish Agent…`);
     try {
-      const result = await client.agent(candidate.url, prefs, config.agentDuration, message => progress('agent', `${host}: ${message}`));
+      const result = await client.agent(candidate.url, prefs, agentSeconds, message => progress('agent', `${host}: ${message}`));
       const jobs = extractAgent(result, candidate.url);
       raw.push(...jobs);
       report({ url: candidate.url, name: host, stage: 'agent', status: jobs.length ? 'ok' : 'empty', message: jobs.length ? `${jobs.length} openings extracted by Agent` : 'Agent found no structured matching openings', count: jobs.length });
@@ -114,10 +125,10 @@ export async function runSearch(
       signal.throwIfAborted();
       report({ url: candidate.url, name: host, stage: 'agent', status: 'error', message: error instanceof TinyFishError ? error.message : 'Agent scan timed out or was interrupted; other sources are retained.', count: 0 });
     }
-  }
+  }));
   for (const candidate of stubborn.values()) {
     if (agentCompanies.has(companyKey(candidate.url))) continue;
-    report({ url: candidate.url, name: new URL(candidate.url).hostname, stage: 'agent', status: 'skipped', message: scanLimit ? 'Agent run cap reached' : 'Agent scanning is disabled', count: 0 });
+    report({ url: candidate.url, name: new URL(candidate.url).hostname, stage: 'agent', status: 'skipped', message: !scanLimit ? 'Agent scanning is disabled' : scans.length ? 'Agent run cap reached' : 'Not enough time left for an Agent scan', count: 0 });
   }
   signal.throwIfAborted();
   if (candidates.length && stats.fetchedPages===0 && !reports.some(item=>item.stage==='agent' && ['ok','empty'].includes(item.status))) {

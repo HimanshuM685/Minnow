@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { neonConfig } from '@neondatabase/serverless';
-import { addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
+import { reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
 import { executeHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
 import { getSearch } from '../src/index';
 import { migrations } from '../src/schema';
@@ -135,6 +135,25 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
       const failure=failureEvents.find(event=>event.type==='started');assert.ok(failure && failure.type==='started');
       assert.equal((await getSearch(failure.searchId))?.status,'error');
       assert.ok((await getSearchEvents(failure.searchId)).some(event=>event.ok===false && event.step==='search'));
+      // Credit correctness: a failed hunt is refunded, a cached replay is free, the balance never goes negative.
+      const balance=async(id='user-a')=>(await getWallet(id))!.credits;
+      const afterFailure=await balance();
+      assert.equal(afterFailure,1,'2 credits: live hunt charged 1, replay free, failed hunt refunded');
+      assert.equal(await balance('user-b'),10,'untouched wallets keep their full balance');
+      // Stale 'running' hunts are closed once and refunded once; a fresh running hunt blocks a second one.
+      const stuck=await createSearch({userId:'user-b',preferenceSnapshot:{charged:true,hash:'stuck'}});
+      assert.equal(await hasRunningSearch('user-b'),true);
+      assert.equal(await reconcileStaleSearches('user-b'),0,'not stale yet');
+      await db.query(`UPDATE searches SET created_at=now()-interval '10 minutes' WHERE id=$1`,[stuck.id]);
+      assert.equal(await reconcileStaleSearches('user-b'),1);
+      assert.equal(await reconcileStaleSearches('user-b'),0,'refund happens once');
+      assert.equal(await balance('user-b'),11);
+      assert.equal((await getSearch(stuck.id))?.status,'error');
+      assert.equal(await hasRunningSearch('user-b'),false);
+      // Zero-listing searches are not cache hits.
+      const empty=await createSearch({userId:'user-b',preferenceSnapshot:{hash:'empty-hash'}});
+      await finishSearch(empty.id,'done',null,{search:1,fetch:0,agent:0});
+      assert.equal(await findCachedSearch('user-b','empty-hash'),null);
     }finally{
       fetchMock.mock.restore();
       if(previousKey===undefined) delete process.env.TINYFISH_API_KEY;else process.env.TINYFISH_API_KEY=previousKey;
