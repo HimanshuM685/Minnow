@@ -10,12 +10,15 @@
     "packages/*"
   ],
   "scripts": {
+    "setup:env": "node scripts/environment.mjs --setup",
+    "env:check": "node scripts/environment.mjs",
+    "predev": "node scripts/environment.mjs --setup --check",
     "dev:web": "npm run dev --workspace=@minnow/web",
     "dev:observatory": "npm run dev --workspace=@minnow/observatory",
     "dev": "concurrently -k -n web,observatory -c cyan,magenta \"npm run dev:web\" \"npm run dev:observatory\"",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "node --test scripts/environment.test.mjs && npm run test --workspaces --if-present",
     "test:ui": "playwright test",
     "db:migrate": "npm run migrate --workspace=@minnow/db"
   },

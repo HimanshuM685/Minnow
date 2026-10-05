@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "dev": "next dev --port 3001", "build": "next build", "start": "next start --port 3001", "typecheck": "tsc --noEmit" },
+  "scripts": { "predev": "node ../../scripts/environment.mjs --setup --check --app=observatory", "dev": "node ../../scripts/next.mjs observatory dev --port 3001", "build": "node ../../scripts/next.mjs observatory build", "start": "node ../../scripts/next.mjs observatory start --port 3001", "typecheck": "tsc --noEmit" },
   "dependencies": {
     "@minnow/db": "1.0.0",
     "@neondatabase/auth": "0.5.0-beta",

@@ -2,7 +2,7 @@ import { getSql } from './client';
 import type { DbListingInput, ListingRow, PreferenceRow, ProfileRow, ResumeRow, SearchEventRow, SearchInput, SearchRow, SourceHealthRow } from './types';
 export * from './types';
 export { getSql } from './client';
-export { isAdminEmail } from './access';
+export { isAdminEmail, hasGoogleAccount, authIntent, appOrigin, observatoryGoogleEntry } from './access';
 
 const normalizeRow = (row: unknown) => Object.fromEntries(Object.entries(row as Record<string,unknown>).map(([key,value])=>[key,value instanceof Date ? value.toISOString() : key==='score' ? Number(value) : value]));
 const one = <T>(rows: unknown[]) => rows.length ? normalizeRow(rows[0]) as T : null;
