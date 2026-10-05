@@ -15,10 +15,10 @@ export async function extractResume(file: File) {
   else if (extension === 'pdf') {
     if (!bytes.subarray(0,5).equals(Buffer.from('%PDF-'))) throw new Error('The file is not a valid PDF.');
     mime = 'application/pdf';
-    const { PDFParse } = await import('pdf-parse');
-    const parser = new PDFParse({ data: new Uint8Array(bytes), isEvalSupported: false });
-    try { text = (await parser.getText({ first: 20 })).text; }
-    finally { await parser.destroy(); }
+    // unpdf bundles a DOM-free pdf.js build; pdf-parse needs DOMMatrix, which serverless runtimes lack.
+    const { extractText, getDocumentProxy } = await import('unpdf');
+    const pdf = await getDocumentProxy(new Uint8Array(bytes));
+    text = (await extractText(pdf, { mergePages: true })).text;
   } else if (extension === 'docx') {
     if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('The file is not a valid DOCX.');
     mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
