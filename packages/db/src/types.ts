@@ -5,6 +5,7 @@ export type VisaSignal = 'sponsors' | 'no_sponsor' | 'unknown';
 
 export interface ProfileRow { user_id: string; display_name: string; profession: string; headline: string; created_at: string; updated_at: string; }
 export interface PreferenceRow { user_id: string; role: string; profession: string; location_label: string; location_country_code: string; seniority: Exclude<Seniority, 'senior' | 'unknown'>; work_mode: Exclude<WorkMode, 'unknown'>; visa: VisaPreference; keywords: string[]; updated_at: string; }
+export interface WalletRow { user_id: string; credits: number; tinyfish_key: string | null; updated_at: string; }
 export interface ResumeRow { id: string; user_id: string; file_name: string; mime: string; bytes: number; extracted_text: string; uploaded_at: string; }
 export interface SearchRow { id: string; user_id: string; preference_snapshot: Record<string, unknown>; status: 'running' | 'done' | 'error'; error: string | null; cache_hit: boolean; search_count: number; fetch_count: number; agent_count: number; created_at: string; finished_at: string | null; }
 export interface SearchEventRow { id: number; search_id: string; step: 'search' | 'fetch' | 'agent' | 'parse' | 'rank'; host: string | null; url: string | null; ok: boolean; detail: string; created_at: string; }

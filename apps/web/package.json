@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "predev": "node ../../scripts/environment.mjs --setup --check --app=web", "dev": "next dev --port 3000", "build": "next build", "start": "next start --port 3000", "typecheck": "tsc --noEmit", "test": "tsx --test tests/*.test.ts" },
+  "scripts": { "dev": "next dev --port 3000", "build": "next build", "start": "next start --port 3000", "typecheck": "tsc --noEmit", "test": "tsx --test tests/*.test.ts" },
   "dependencies": {
     "@minnow/core": "1.0.0",
     "@minnow/db": "1.0.0",

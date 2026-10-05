@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { defaultPreferences, canonicalUrl, type SearchEvent } from '@minnow/core';
-import { addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getResume, insertListings, skippedHosts, updateSourceHealth } from '@minnow/db';
+import { addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getResume, getWallet, insertListings, spendCredit, addCredits, skippedHosts, updateSourceHealth } from '@minnow/db';
 import { emptyStats, runSearch } from './pipeline';
 import { resumeSkills } from './resume';
 
@@ -18,6 +18,11 @@ export async function executeHunt(user: { id:string;name:string }, refresh:boole
   const hash=createHash('sha256').update(JSON.stringify({...prefs,updated_at:undefined,resume:resume?.uploaded_at??null,excludedHosts:excludedHosts.sort()})).digest('hex');
   const snapshot={...prefs,hash,resume_skills:resume?resumeSkills(resume.extracted_text):[]};
   const cached=refresh ? null : await findCachedSearch(user.id,hash);
+  // A saved personal TinyFish key runs unmetered; otherwise a live (non-cached) hunt costs one credit.
+  const wallet=await getWallet(user.id);
+  const ownKey=wallet?.tinyfish_key?.trim()||null;
+  const charged=!cached && !ownKey;
+  if(charged && await spendCredit(user.id)===null) throw new HuntInputError('You are out of credits. Message @HimanshuM685 on Telegram for more, or add your own TinyFish API key on the Credits page.');
   const run=await createSearch({userId:user.id,preferenceSnapshot:snapshot,cacheHit:Boolean(cached)});
   const stats=emptyStats();
   const controller=new AbortController();
@@ -48,9 +53,10 @@ export async function executeHunt(user: { id:string;name:string }, refresh:boole
       return;
     }
     await trace('search',null,null,true,'Hunt started with saved preferences and extracted resume skill hints.');
-    if(!process.env.TINYFISH_API_KEY?.trim()) throw new Error('Set TINYFISH_API_KEY in apps/web/.env.local.');
+    const apiKey=ownKey??process.env.TINYFISH_API_KEY?.trim();
+    if(!apiKey) throw new Error('Set TINYFISH_API_KEY in apps/web/.env.local.');
     const preferences={...defaultPreferences,role:prefs.role,profession:prefs.profession,location:prefs.location_label,country:prefs.location_country_code,seniority:prefs.seniority,workMode:prefs.work_mode,visa:prefs.visa==='needs_sponsorship'?'needs_sponsorship' as const:'any' as const,keywords:prefs.keywords.join(', '),resumeKeywords:snapshot.resume_skills};
-    const result=await runSearch(preferences,run.id,process.env.TINYFISH_API_KEY,workSignal,emit,{maxAgentRuns:limit(process.env.MAX_AGENT_RUNS,2,0,2),agentDuration:limit(process.env.AGENT_DURATION_SECONDS,120,30,120),skippedHosts:excludedHosts,stats});
+    const result=await runSearch(preferences,run.id,apiKey,workSignal,emit,{maxAgentRuns:limit(process.env.MAX_AGENT_RUNS,2,0,2),agentDuration:limit(process.env.AGENT_DURATION_SECONDS,120,30,120),skippedHosts:excludedHosts,stats});
     await writes;
     if(writeError) throw writeError;
     workSignal.throwIfAborted();
@@ -64,6 +70,7 @@ export async function executeHunt(user: { id:string;name:string }, refresh:boole
     await writes;
     const message=signal.aborted?'Hunt stopped or reached its time limit. Completed trace events are retained.':error instanceof Error?error.message:'Hunt failed.';
     await trace('rank',null,null,false,message);
+    if(charged) await addCredits(user.id,1);
     await finishSearch(run.id,'error',message,{search:stats.searchRequests,fetch:stats.fetchRequests,agent:stats.agentRuns});
     throw new Error(message);
   }

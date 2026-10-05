@@ -1,9 +1,9 @@
-# Minnow + Observatory
+# Minnow
 
-**Live openings, matched to you.** Two Next.js App Router apps, one Neon Postgres database, no third backend.
+**Live openings, matched to you.** One Next.js App Router app, with the existing admin panel under `/admin`, backed by Neon Postgres.
 
 - **`apps/web` · port 3000:** Minnow landing, Managed Better Auth, saved preferences, resume parsing, live hunts and ranked shortlists.
-- **`apps/observatory` · port 3001:** allowlisted admin instrument panel. Overview, Hunts, Listings, Sources, People and Trace query only stored database rows. It has no TinyFish client or resume download route.
+- **`apps/web/app/admin`:** allowlisted admin instrument panel. Overview, Hunts, Listings, Sources, People and Trace query only stored database rows. Admin does not call TinyFish or expose resume downloads.
 - **`packages/db`:** shared SQL migration, parameterized Neon queries, application row types and access helpers.
 - **`packages/core`:** pure discovery, URL normalization, extraction, matching and SSE decoding. TinyFish HTTP calls live only in `apps/web/lib/tinyfish.ts`.
 
@@ -13,20 +13,8 @@ Requires **Node.js 22+**, a Neon Postgres branch with **Managed Better Auth** en
 
 ```sh
 npm install
-npm run setup:env
+cp apps/web/.env.example apps/web/.env.local   # the only env file; fill it in
 ```
-
-`setup:env` fills missing app-local values from the root `.env`, generates one shared cookie secret if none exists, and keeps the TinyFish key on web only. Existing app-local credentials and unrelated settings are preserved. It reports the Neon settings you still need without printing secret values.
-
-If you already put the TinyFish key in the root `.env`, add these values there:
-
-```dotenv
-NEON_AUTH_BASE_URL=https://your-branch.neonauth.region.aws.neon.tech/neondb/auth
-DATABASE_URL=postgresql://your-pooled-neon-connection-string
-OBSERVATORY_ADMIN_EMAILS=you@example.com
-```
-
-Then run `npm run setup:env` again. You can also configure `apps/web/.env.local` and `apps/observatory/.env.local` directly using their `.env.example` files. App-local values take precedence over the root setup input; keep shared values identical when editing configured files.
 
 ### Web environment
 
@@ -39,29 +27,33 @@ DATABASE_URL=postgresql://your-pooled-neon-connection-string
 TINYFISH_API_KEY=your-tinyfish-key
 OBSERVATORY_ADMIN_EMAILS=you@example.com
 NEON_AUTH_GOOGLE_ENABLED=true
-WEB_APP_URL=http://localhost:3000
-OBSERVATORY_APP_URL=http://localhost:3001
 MAX_AGENT_RUNS=2
 AGENT_DURATION_SECONDS=120
 ```
 
-Get the Auth URL from **Neon Console → Project → Branch → Auth → Configuration**. Get the pooled Postgres URL from the branch connection dialog. The setup command already generates a shared cookie secret. If configuring manually, generate it with:
+Get the Auth URL from **Neon Console → Project → Branch → Auth → Configuration**. Get the pooled Postgres URL from the branch connection dialog. Setup generates missing secrets. If configuring manually, generate random values with:
 
 ```sh
 openssl rand -base64 32
 ```
 
-Enable **Google** on the Neon Auth branch and configure the web origin as a trusted domain, then set `NEON_AUTH_GOOGLE_ENABLED=true` in web. Minnow recommends Google first and keeps email/password below it as an alternative. Keep email/password enabled on the branch for that alternative. Provider credentials stay in Neon’s managed configuration, not in this app. If Google is not enabled, the web button stays hidden and Observatory cannot offer password sign-in as a fallback.
+Enable **Google** on the Neon Auth branch and configure the web origin as a trusted domain, then set `NEON_AUTH_GOOGLE_ENABLED=true`. Minnow recommends Google first and keeps email/password below it; enable both methods on the branch. Provider credentials stay in Neon’s managed configuration.
 
-### Observatory environment
+### Google account-linking recovery
 
-In `apps/observatory/.env.local`, use the **same** `DATABASE_URL`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET` and `OBSERVATORY_ADMIN_EMAILS` as web. **Do not set `TINYFISH_API_KEY` here.** Set `WEB_APP_URL` and `OBSERVATORY_APP_URL` to the two app origins; localhost defaults are ports 3000 and 3001.
+If Google returns `account_not_linked`, the matching email identity already exists but Google has not been connected under the managed branch’s linking policy. The sign-in screen preserves that reason even with legacy repeated `error` query values.
 
-Observatory is **Google-only** at its sign-in entry. Its Google button opens `/auth/sign-in?intent=observatory` on web, where only the Google form is offered. Managed OAuth returns to the protected `/app/observatory` callback so Neon’s proxy can complete the session. That page checks the allowlisted email and Google-linked Managed Auth account, then redirects to Observatory. Observatory repeats both checks on pages and mutations. It has no password sign-in action, separate sign-up, or second Auth catch-all.
+1. Sign in with your existing email and password.
+2. Open **Settings → Connect Google**, and choose the Google account with the same email.
+3. Confirm Settings shows Google as connected, then sign out and sign in with Google.
 
-On localhost, cookies are host-scoped rather than port-scoped, so a session from `localhost:3000` can be read on `localhost:3001`. Use the same hostname for both apps. For production sibling subdomains, configure `NEON_AUTH_COOKIE_DOMAIN=.yourdomain.com` identically in both apps and add both origins to the Neon branch’s trusted domains. A shared secret alone does not share cookies between unrelated domains.
+This uses the authenticated Neon client’s `linkSocial()` through the existing managed Auth proxy. It preserves your user ID and product data. If the branch requires email verification, complete its managed verification flow first. Linking errors explain mismatched emails or disabled linking; the application never edits `neon_auth` directly.
 
-An Observatory session is allowed only if its email exactly matches the comma-separated allowlist (case-insensitive) and its Managed Auth identity has a Google account. A signed-in non-admin gets **403**. An allowlisted identity with only password credentials is sent to Google sign-in. This uses Neon’s session and account APIs, not a separate session store.
+### Admin access
+
+Open `http://localhost:3000/admin`. It uses the same session as the user app; signed-out visitors go to `/auth/sign-in?next=/admin` and return to `/admin` after signing in. Access requires an email in `OBSERVATORY_ADMIN_EMAILS` (comma-separated, exact, case-insensitive); other accounts get **HTTP 403**.
+
+The separate Observatory runtime, port 3001, and cross-app callback have been retired. The existing `OBSERVATORY_ADMIN_EMAILS` setting is retained for compatibility.
 
 ### Apply the SQL migration
 
@@ -73,22 +65,13 @@ The migration command reads `apps/web/.env.local` and applies `packages/db/migra
 
 If signup previously displayed `relation "profiles" does not exist`, the Neon account may already have been created. Apply the migration, then use Google or **Sign in** with that account. Profile setup now happens idempotently in the signed-in app shell, so a database bootstrap error is not reported as a failed account creation.
 
-### Run both apps
+### Run Minnow
 
 ```sh
 npm run dev
 ```
 
-Or run them separately:
-
-```sh
-npm run dev:web
-npm run dev:observatory
-```
-
-Open **http://localhost:3000** and **http://localhost:3001**. Restart after changing environment variables. Both apps use Next.js **16.3.8** and `proxy.ts` with `auth.middleware()`.
-
-`npm run dev` synchronizes missing environment values and checks both apps before launching Next.js. `npm run env:check` lists any missing or invalid settings, so an empty secret produces a setup message instead of a middleware stack trace. The separate app dev commands perform the same scoped check.
+Open **http://localhost:3000**. The app uses Next.js **16.3.8** and Neon’s session middleware. `npm run dev` synchronizes missing environment values and checks web before launch. `npm run env:check` lists missing or invalid settings.
 
 ## Product routes
 
@@ -96,11 +79,12 @@ Open **http://localhost:3000** and **http://localhost:3001**. Restart after chan
 | --- | --- |
 | `/` | Static landing with a clearly labelled illustrative sample; no listing/database fetch |
 | `/auth/sign-up`, `/auth/sign-in` | Google-first custom auth with an email/password alternative |
-| `/app/observatory` | Protected managed-Google callback and allowlisted redirect to Observatory |
+| `/auth/complete` | Managed OAuth completion and validated same-app admin return |
 | `/app` | Saved role, profession, location, country, seniority, work mode, visa and keywords; live hunt progress |
 | `/app/listings` | Latest completed ranked shortlist; hidden rows omitted; real Apply links and new-since-last-hunt marks |
 | `/app/resume` | Upload or replace PDF/DOCX/TXT, inspect extracted skill hints, download your own file |
-| `/app/settings` | Name, profession, headline and sign-out |
+| `/app/settings` | Profile, connected Google sign-in and sign-out |
+| `/admin` | Overview; nested Hunts, Listings, Sources, People and Trace routes |
 
 Preferences are stored in Neon, not localStorage. Resume bytes are capped at **2 MB** and stored as `bytea` with extracted text. PDF and DOCX are parsed on the web server. Raw files are never sent to TinyFish. Recognized resume skills boost ranking and can be added as explicit keyword hints. Download queries always use the authenticated user ID.
 
@@ -136,9 +120,9 @@ The completed hunt and shortlist display **actual persisted counts**: N searches
 - **Refresh live** bypasses the cache. Listing timestamps record when the source was read.
 - Stored results are read by Server Components. Observatory hiding takes effect on the next web render; it updates that user's existing copies of the same canonical opening, so cache replays cannot resurrect a moderated result.
 
-## Observatory
+## Admin panel
 
-All panel pages are Server Components guarded by `getSession()`, the admin email allowlist, and a Google-linked account check. Lists paginate in groups of **25**, use parameterized filters and query only rendered columns.
+All panel pages are Server Components guarded by the query key, `getSession()`, and the admin email allowlist. Lists paginate in groups of **25**, use parameterized filters and query only rendered columns. The dark panel CSS is scoped; the coastal product keeps its own layout.
 
 - **Overview:** hunts today, listings stored, Fetch error rate, Agent attempts, top locations and role snapshots.
 - **Hunts:** status, user ID, preference snapshot, counts, duration; open a hunt for its events and written listings.
@@ -147,7 +131,7 @@ All panel pages are Server Components guarded by `getSession()`, the admin email
 - **People:** profile and preference summaries plus hunt counts; no resume body.
 - **Trace:** search UUID input and ordered events proving what actually ran.
 
-Empty tables show empty states. Observatory does not infer runs, call TinyFish, or expose resume downloads. Shared queries include a limited resume metadata/preview helper for authorized admin use; the People list does not load it.
+Empty tables show empty states. Admin does not infer runs, call TinyFish, or expose resume downloads. The People list does not load resume contents.
 
 ## Build and verification
 
@@ -159,40 +143,37 @@ npm run build
 
 Builds need configured Neon Auth environment variables because the SDK validates its cookie secret at module initialization. Protected pages stay dynamic; landing/legal pages prerender without fetching listings.
 
-Start each production app separately:
+Start the production app:
 
 ```sh
 npm run start --workspace=@minnow/web
-npm run start --workspace=@minnow/observatory
 ```
 
-Deploy the two app roots independently on a Next.js Node runtime. The web host must permit streaming hunt requests up to **300 seconds**; Observatory needs no long-running request budget. Keep secrets server-side and share only the Neon/Auth configuration across apps.
+Deploy `apps/web` on a Next.js Node runtime. The host must permit streaming hunt requests up to **300 seconds**. Keep database, Auth cookie, TinyFish and admin-key configuration server-side.
 
 Tests include parsing, canonicalization, dedupe, location restrictions, sponsorship evidence, resume-token ranking, source skipping, TinyFish failure/cancellation handling, and actual SQL round-trips through the Neon driver against an isolated PostgreSQL-compatible PGlite database. The web hunt orchestrator is tested through successful persistence, zero-call cache replay and failed TinyFish authentication with retained traces. PDF/DOCX/TXT extraction tests use real document bytes. They do not claim a live Neon branch was exercised.
 
-Browser route checks use nonfunctional build/test-only Auth configuration, verify public landing, labelled samples, Google-first/email auth errors, protected app redirects, unauthorized APIs, and the Google-only Observatory entry through web:
+Browser route checks use nonfunctional build/test-only Auth configuration, verifying public landing, labelled samples, Google/email auth errors, linking recovery messages, protected routes, unauthorized APIs, strict admin 404s, and signed admin-login continuations:
 
 ```sh
 npx playwright install chromium
 npm run test:ui
 ```
 
-Run browser tests after both apps have been built. For full acceptance with your real branch: sign up, save preferences, upload a resume, run a multi-host hunt, then open Observatory with an allowlisted account. Confirm the hunt’s trace and counts, hide a listing and reload the web shortlist, then skip a source and refresh the hunt.
+Run browser tests after building web. For real-branch acceptance, connect Google to the existing email account, sign out, and complete Google sign-in. Open keyed admin with each login method; confirm trace/counts, hide a listing and reload the shortlist, then skip a source and refresh a hunt. Automated route checks do not perform real Google consent.
 
 ## Environment reference
 
-| Variable | Web | Observatory |
-| --- | --- | --- |
-| `DATABASE_URL` | Required | Same database |
-| `NEON_AUTH_BASE_URL` | Required | Same Auth branch |
-| `NEON_AUTH_COOKIE_SECRET` | Required, 32+ chars | Same secret |
-| `OBSERVATORY_ADMIN_EMAILS` | Shared configuration | Required allowlist |
-| `NEON_AUTH_COOKIE_DOMAIN` | Optional shared production cookie domain | Same if set |
-| `TINYFISH_API_KEY` | Required for hunts | Never set |
-| `NEON_AUTH_GOOGLE_ENABLED` | Set true after enabling Google on the branch | OAuth entry runs on web |
-| `WEB_APP_URL` | Web origin, default `http://localhost:3000` | Same web origin for Google entry |
-| `OBSERVATORY_APP_URL` | Admin return origin, default `http://localhost:3001` | Same admin origin |
-| `MAX_AGENT_RUNS` | 0–2, default 2 | Not used |
-| `AGENT_DURATION_SECONDS` | 30–120, default 120 | Not used |
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Required pooled Neon Postgres connection |
+| `NEON_AUTH_BASE_URL` | Required Managed Auth branch URL |
+| `NEON_AUTH_COOKIE_SECRET` | Required, at least 32 characters |
+| `OBSERVATORY_ADMIN_EMAILS` | Admin email allowlist; retained setting name |
+| `NEON_AUTH_COOKIE_DOMAIN` | Optional production cookie domain |
+| `TINYFISH_API_KEY` | Required for live hunts |
+| `NEON_AUTH_GOOGLE_ENABLED` | True after enabling Google on the branch |
+| `MAX_AGENT_RUNS` | 0–2, default 2 |
+| `AGENT_DURATION_SECONDS` | 30–120, default 120 |
 
-Next.js app workspaces read their own `.env.local`. The root `.env` is setup input: `npm run setup:env` copies its missing values into the app-local files, with TinyFish going to web only. Observatory's launch wrapper also removes an inherited `TINYFISH_API_KEY` from its process environment.
+Next.js reads `apps/web/.env.local`, the only env file. There is no root `.env`.

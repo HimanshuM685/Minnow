@@ -3,8 +3,10 @@
 Live openings, matched to you. Preserve the existing coastal product and live-data pipeline.
 
 ## Runtime
-- `apps/web`: Next.js App Router product, Managed Better Auth, preferences, resume, hunt, shortlist.
-- `apps/observatory`: separate Next.js App Router admin instrument panel. Reads and moderates stored rows; never calls TinyFish.
+- `apps/web`: one Next.js App Router runtime, Managed Better Auth, preferences, resume, hunt, shortlist, and the existing dark admin instrument panel under `/admin`.
+- Admin requires exactly one correct `key` query value on every URL, a normal Google/email session, and the `OBSERVATORY_ADMIN_EMAILS` allowlist. Missing/wrong keys return HTTP 404 before rendering or Auth calls. Pages and mutations independently recheck access.
+- A short-lived signed login-continuation cookie remembers an internal admin destination without storing its key; login restores the key from server ENV. It cannot authorize keyless admin URLs.
+- Existing email identities can explicitly connect Google from Settings through Managed Neon `linkSocial`; duplicate OAuth errors retain the actual linking failure.
 - `packages/db`: shared Neon Postgres schema, types, parameterized queries and migration. Identity stays in `neon_auth`.
 - `packages/core`: pure URL normalization, parsing, matching, contracts and SSE decoding. TinyFish HTTP clients live only in web.
 
@@ -16,4 +18,4 @@ Search discovers live application pages with purpose and optional country/domain
 Every hunt, including cache hits and failures, writes `searches` and ordered `search_events`. Cache is database-backed, per-user preference/resume hash, 15 minutes. Refresh bypasses it. Observatory hiding and skipped source flags are enforced by web queries and future hunts.
 
 ## Verification
-Typecheck both apps and packages; production-build both apps; test parsing, dedupe, ranking, resume boosts, failed traces, cache and authorization helpers. Live Managed Auth/Neon/TinyFish acceptance needs configured app environment variables.
+Typecheck web and shared packages; production-build web; test parsing, dedupe, ranking, resume boosts, failed traces, cache, signed continuations, strict admin gates and ordinary Google/email entry. Live Managed Auth/Neon/TinyFish acceptance needs configured app environment variables and user OAuth consent.

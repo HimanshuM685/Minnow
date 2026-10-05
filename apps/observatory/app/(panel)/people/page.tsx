@@ -1,5 +1,0 @@
-import { listPeople } from '@minnow/db';
-import { requireAdmin } from '@/lib/auth/session';
-import { Empty,Pagination,pageNumber } from '@/lib/ui';
-export const dynamic = 'force-dynamic';
-export default async function People({ searchParams }: { searchParams: Promise<{page?:string}> }) { await requireAdmin(); const page=pageNumber((await searchParams).page); const people=await listPeople(page); return <><header className="page-heading"><h1>People</h1><p>Profiles and preferences only. Identity is owned by Neon Auth.</p></header>{!people.length ? <Empty table="profiles" /> : <div className="table-scroll"><table><thead><tr><th>Profile</th><th>Profession</th><th>Role</th><th>Location</th><th>Experience</th><th>Visa</th><th>Hunts</th></tr></thead><tbody>{people.map(person=><tr key={person.user_id}><td>{person.display_name}<small className="mono">{person.user_id}</small></td><td>{person.profession||'—'}</td><td>{person.role||'—'}</td><td>{person.location_label||'—'}</td><td>{person.seniority}</td><td>{person.visa}</td><td>{person.hunts}</td></tr>)}</tbody></table></div>}<Pagination page={page} count={people.length} path="/people" /></>; }

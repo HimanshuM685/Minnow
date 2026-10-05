@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { neonConfig } from '@neondatabase/serverless';
-import { addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
+import { addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
 import { executeHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
 import { getSearch } from '../src/index';
 
@@ -19,7 +19,8 @@ function pgText(value: unknown): string|null {
 test('Neon query helpers round-trip preferences, durable traces, moderation, cache replay, resumes and source skipping', async () => {
   const db=new PGlite();
   const migration=await readFile(new URL('../migrations/001_initial.sql',import.meta.url),'utf8');
-  await db.exec(`BEGIN; ${migration} COMMIT;`);
+  const wallet=await readFile(new URL('../migrations/002_wallet.sql',import.meta.url),'utf8');
+  await db.exec(`BEGIN; ${migration} ${wallet} COMMIT;`);
   const oldUrl=process.env.DATABASE_URL;
   process.env.DATABASE_URL='postgresql://test:test@db.test/test';
   const original=neonConfig.fetchFunction;
@@ -42,8 +43,18 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
   };
   try {
     await ensureProfile('user-a','Ada'); await ensureProfile('user-b','Grace');
+    assert.equal((await getWallet('user-a'))?.credits,10);
+    for(let i=9;i>=0;i--) assert.equal(await spendCredit('user-a'),i);
+    assert.equal(await spendCredit('user-a'),null);
+    await addCredits('user-a',2); assert.equal((await getWallet('user-a'))?.credits,2);
     await savePreferences('user-a',{ role:'Software engineer',profession:'Engineering',location_label:'London',location_country_code:'GB',seniority:'intern',work_mode:'hybrid',visa:'needs_sponsorship',keywords:['Python','SQL'] });
     assert.equal((await getPreferences('user-a'))?.role,'Software engineer');
+    await updateProfile('user-a', 'Ada Lovelace', 'Computer Scientist', 'Computing pioneer');
+    const profile = await getProfile('user-a');
+    assert.equal(profile?.display_name, 'Ada Lovelace');
+    assert.equal(profile?.profession, 'Computer Scientist');
+    assert.equal(profile?.headline, 'Computing pioneer');
+    assert.equal((await getPreferences('user-a'))?.profession, 'Computer Scientist');
     const first=await createSearch({userId:'user-a',preferenceSnapshot:{role:'Software engineer',hash:'prefs-hash'}});
     await addSearchEvent(first.id,'search','api.search.tinyfish.ai','https://api.search.tinyfish.ai',true,'Discovered two sources');
     await addSearchEvent(first.id,'fetch','jobs.example.com','https://jobs.example.com/jobs/1',false,'Page timed out');

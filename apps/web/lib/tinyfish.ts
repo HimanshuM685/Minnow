@@ -8,17 +8,20 @@ export class TinyFishError extends Error {
   constructor(message: string, public status = 502) { super(message); }
 }
 
-const timestamps: number[] = [];
-function reserveSearch() {
+// Per-API-key budget so one user's hunts never throttle another's (or the platform key).
+const budgets = new Map<string, number[]>();
+function reserveSearch(key: string) {
   const now = Date.now();
+  const timestamps = budgets.get(key) ?? [];
   while (timestamps[0] < now - 60_000) timestamps.shift();
   if (timestamps.length >= 28) throw new TinyFishError('Search rate budget reached. Wait a minute and try again.', 429);
   timestamps.push(now);
+  budgets.set(key, timestamps);
 }
 
 function httpError(status: number): TinyFishError {
   const messages: Record<number, string> = {
-    401: 'TinyFish rejected the API key. Check TINYFISH_API_KEY on the server.',
+    401: 'TinyFish rejected the API key. Check the key you saved on the Credits page, or TINYFISH_API_KEY on the server.',
     402: 'This TinyFish endpoint needs account access or an available Agent balance.',
     403: 'TinyFish denied access to this endpoint or upstream source.',
     429: 'TinyFish is rate limiting requests. Wait a minute and try again.',
@@ -55,7 +58,7 @@ export class TinyFishClient {
     let response: Response;
     for (let attempt = 0; ; attempt++) {
       this.signal.throwIfAborted();
-      if (url.startsWith('https://api.search.')) { reserveSearch(); this.stats.searchRequests++; }
+      if (url.startsWith('https://api.search.')) { reserveSearch(this.key); this.stats.searchRequests++; }
       if (url.startsWith('https://api.fetch.')) this.stats.fetchRequests++;
       response = await fetch(url, {
         ...init, headers: { 'X-API-Key': this.key, 'Content-Type': 'application/json' },
