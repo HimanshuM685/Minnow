@@ -23,7 +23,7 @@ test('landing is public, sample is labelled, auth UI is owned, and app routes ar
   await expect(page.getByText('Illustrative sample · not live')).toBeVisible();
   await expect(page.getByRole('link',{name:'Apply',exact:true})).toHaveCount(0);
   await page.screenshot({path:testInfo.outputPath('landing.png'),fullPage:true});
-  await page.getByRole('link',{name:'Start your hunt'}).click();
+  await page.getByRole('link',{name:'Start your hunt'}).first().click();
   await expect(page.getByRole('button',{name:'Create account'})).toBeVisible();
   await expect(page.getByRole('button',{name:'Continue',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Continue with Google'})).toBeVisible();

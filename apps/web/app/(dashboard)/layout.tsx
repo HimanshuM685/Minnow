@@ -14,11 +14,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
   await ensureProfile(user.id, user.name);
   const wallet = await getWallet(user.id);
   return <>
-    <header className="site-header">
+    <header className="site-header solid">
       <div className="header-inner">
         <Link href="/dashboard" className="wordmark"><span className="brand-mark"><Fish /></span><span>minnow<span className="brand-dot">.</span></span></Link>
         <div className="public-nav">
-          <Link href="/credits">Credits · {wallet?.tinyfish_key ? 'own key' : wallet?.credits ?? 0}</Link>
+          <Link href="/credits" className="nav-credits">Credits · {wallet?.tinyfish_key ? 'own key' : wallet?.credits ?? 0}</Link>
           <Link href="/dashboard/settings" className="nav-user-email" title="Settings">{user.name || user.email}</Link>
           <form action={signOut} className="nav-signout-form"><button type="submit" className="nav-signout-btn">Sign out</button></form>
         </div>

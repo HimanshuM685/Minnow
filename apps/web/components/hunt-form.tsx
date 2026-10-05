@@ -50,7 +50,7 @@ export function HuntForm({ initial, skills, latest, configured, credits }: { ini
     <>
       {isFirstTime && (
         <div className="onboarding-banner" role="region" aria-label="Welcome guide">
-          <Sparkles size={22} style={{ color: 'var(--ocean)', flexShrink: 0, marginTop: '2px' }} />
+          <Sparkles size={22} style={{ flexShrink: 0, marginTop: '2px' }} />
           <div>
             <h3>Welcome to your workspace!</h3>
             <p>
@@ -83,7 +83,7 @@ export function HuntForm({ initial, skills, latest, configured, credits }: { ini
               <button className="primary-button" disabled={!configured || outOfCredits || value.role.trim().length < 2}><Search size={16} />Run hunt</button>
             </div>
             {value.role.trim().length < 2 && (
-              <p className="field-hint" style={{ marginTop: '8px', color: '#768b99' }}>
+              <p className="field-hint">
                 Enter a target role above (at least 2 characters) to enable &ldquo;Run hunt&rdquo;.
               </p>
             )}
