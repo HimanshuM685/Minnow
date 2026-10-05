@@ -2,6 +2,8 @@ import { getSql } from './client';
 import type { DbListingInput, ListingRow, PreferenceRow, ProfileRow, WalletRow, ResumeRow, SearchEventRow, SearchInput, SearchRow, SourceHealthRow } from './types';
 export * from './types';
 export { getSql } from './client';
+export { ensureSchema } from './schema';
+import { ensureSchema } from './schema';
 export { isAdminEmail, hasGoogleAccount } from './access';
 
 const normalizeRow = (row: unknown) => Object.fromEntries(Object.entries(row as Record<string,unknown>).map(([key,value])=>[key,value instanceof Date ? value.toISOString() : key==='score' ? Number(value) : value]));
@@ -9,6 +11,7 @@ const one = <T>(rows: unknown[]) => rows.length ? normalizeRow(rows[0]) as T : n
 const rows = <T>(value: unknown[]) => value.map(normalizeRow) as T[];
 
 export async function ensureProfile(userId: string, name: string) {
+  await ensureSchema();
   const sql = getSql();
   const result = await sql`INSERT INTO profiles(user_id, display_name) VALUES(${userId}, ${name}) ON CONFLICT(user_id) DO UPDATE SET display_name = CASE WHEN profiles.display_name = '' THEN EXCLUDED.display_name ELSE profiles.display_name END RETURNING user_id, display_name, profession, headline, created_at, updated_at`;
   await sql`INSERT INTO preferences(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING`;

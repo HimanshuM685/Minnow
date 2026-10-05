@@ -22,7 +22,7 @@ export function SiteHeader({ user, signOut }: { user: string | null; signOut: ()
         {user ? <>
           <Link href="/dashboard/settings" className="nav-user-email" title="Settings">{user}</Link>
           <form action={signOut} className="nav-signout-form"><button type="submit" className="nav-signout-btn">Sign out</button></form>
-        </> : <Link href="/auth/sign-in" className="nav-cta">Sign in</Link>}
+        </> : <Link href="/auth/sign-in" className="nav-cta">Get started</Link>}
       </nav>
     </div>
   </header>;

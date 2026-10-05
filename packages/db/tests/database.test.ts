@@ -6,6 +6,7 @@ import { neonConfig } from '@neondatabase/serverless';
 import { addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
 import { executeHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
 import { getSearch } from '../src/index';
+import { migrations } from '../src/schema';
 
 function pgText(value: unknown): string|null {
   if(value===null || value===undefined) return null;
@@ -18,9 +19,7 @@ function pgText(value: unknown): string|null {
 
 test('Neon query helpers round-trip preferences, durable traces, moderation, cache replay, resumes and source skipping', async () => {
   const db=new PGlite();
-  const migration=await readFile(new URL('../migrations/001_initial.sql',import.meta.url),'utf8');
-  const wallet=await readFile(new URL('../migrations/002_wallet.sql',import.meta.url),'utf8');
-  await db.exec(`BEGIN; ${migration} ${wallet} COMMIT;`);
+  await db.exec(`BEGIN; ${migrations.join(';\n')}; COMMIT;`);
   const oldUrl=process.env.DATABASE_URL;
   process.env.DATABASE_URL='postgresql://test:test@db.test/test';
   const original=neonConfig.fetchFunction;
