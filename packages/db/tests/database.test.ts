@@ -140,6 +140,28 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
       const afterFailure=await balance();
       assert.equal(afterFailure,1,'2 credits: live hunt charged 1, replay free, failed hunt refunded');
       assert.equal(await balance('user-b'),10,'untouched wallets keep their full balance');
+      // Filters are real hunt inputs: the unsaved form wins, hard filters drop and are counted, the snapshot keeps them.
+      fail=false;
+      const form=(over:object)=>({role:'Software Engineer',profession:'',location_label:'',location_country_code:'',work_mode:'any',keywords:[],filters:{},...over});
+      const strict:HuntMessage[]=[];
+      await executeHunt({id:'user-a',name:'Ada'},true,new AbortController().signal,event=>strict.push(event),form({work_mode:'onsite',filters:{employmentType:'full_time',skills:['Python']}}));
+      const strictDone=strict.find(event=>event.type==='complete');assert.ok(strictDone && strictDone.type==='complete');
+      assert.equal(strictDone.found,0);
+      assert.deepEqual(strictDone.dropped,[{filter:'Work mode',count:2}],'the empty result names the hard filter that removed everything');
+      const strictRun=await getSearch(strictDone.searchId);
+      assert.equal(strictRun?.preference_snapshot.work_mode,'onsite');
+      assert.equal((strictRun?.preference_snapshot.filters as {employmentType:string}).employmentType,'full_time');
+      assert.equal(strictRun?.preference_snapshot.hard_filter_drop_total,2);
+      assert.equal(await balance(),afterFailure,'a hunt that found nothing is not charged');
+      const loose:HuntMessage[]=[];
+      await executeHunt({id:'user-a',name:'Ada'},true,new AbortController().signal,event=>loose.push(event),form({work_mode:'hybrid',filters:{skills:['Python','SQL'],skillMode:'all'}}));
+      const looseDone=loose.find(event=>event.type==='complete');assert.ok(looseDone && looseDone.type==='complete');
+      const looseListings=await getSearchListings(looseDone.searchId,'user-a');
+      assert.equal(looseListings.length,2);
+      assert.ok(looseListings[0].match_reasons.includes('hybrid') && looseListings[0].match_reasons.some(reason=>reason.startsWith('Skill:')));
+      assert.deepEqual(looseListings[0].facts.skills_found,['Python','SQL']);
+      assert.equal(await balance(),afterFailure-1);
+      await addCredits('user-a',1);
       // Stale 'running' hunts are closed once and refunded once; a fresh running hunt blocks a second one.
       const stuck=await createSearch({userId:'user-b',preferenceSnapshot:{charged:true,hash:'stuck'}});
       assert.equal(await hasRunningSearch('user-b'),true);

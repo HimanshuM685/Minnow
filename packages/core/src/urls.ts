@@ -35,6 +35,7 @@ export function sourceFor(value: string): SourceName {
   if (/(^|\.)greenhouse\.io$/.test(host)) return 'greenhouse';
   if (/(^|\.)lever\.co$/.test(host)) return 'lever';
   if (/(^|\.)ashbyhq\.com$/.test(host)) return 'ashby';
+  if (/(^|\.)myworkdayjobs\.com$/.test(host)) return 'workday';
   if (/(^|\.)(indeed\.com|wellfound\.com|builtin\.com|internshala\.com|remoteok\.com|weworkremotely\.com|remotive\.com|glassdoor\.com|ziprecruiter\.com)$/.test(host)) return 'portal';
   return 'careers';
 }
@@ -45,6 +46,7 @@ export function isJobUrl(value: string): boolean {
   if (sourceFor(value) === 'greenhouse') return /\/jobs\/\d+/.test(path) || url.searchParams.has('gh_jid');
   if (sourceFor(value) === 'lever') return /^\/[^/]+\/[a-f0-9-]{20,}/i.test(path);
   if (sourceFor(value) === 'ashby') return /^\/[^/]+\/[a-f0-9-]{20,}/i.test(path);
+  if (sourceFor(value) === 'workday') return /\/job\/[^/]+/i.test(path);
   if (sourceFor(value) === 'portal' && /^\/remote-jobs\/[^/]+/i.test(path)) return true;
   if (/^\/internship\/detail\/[^/]+/i.test(path)) return true;
   return /\/(jobs?|positions?|openings?|opportunities|requisitions)\/[^/?#]+/i.test(path)

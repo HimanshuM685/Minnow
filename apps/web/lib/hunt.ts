@@ -1,26 +1,34 @@
 import { createHash } from 'node:crypto';
-import { defaultPreferences, canonicalUrl, type SearchEvent } from '@minnow/core';
-import { addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getResume, getWallet, hasRunningSearch, insertListings, reconcileStaleSearches, spendCredit, addCredits, skippedHosts, updateSourceHealth } from '@minnow/db';
+import { canonicalUrl, hardFilterLabels, normalizeFilters, type SearchEvent } from '@minnow/core';
+import { addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getResume, getWallet, hasRunningSearch, insertListings, patchSearchSnapshot, reconcileStaleSearches, spendCredit, addCredits, skippedHosts, updateSourceHealth } from '@minnow/db';
 import { emptyStats, runSearch } from './pipeline';
 import { resumeSkills } from './resume';
+import { huntInputSchema, toPreferences, toRow, type HuntInput } from './hunt-input';
 
 export class HuntInputError extends Error {}
 // Soft deadline for discovery. Must leave room inside the route's maxDuration for ranking and persistence.
 export const HUNT_BUDGET_MS=200_000;
-export type HuntMessage = { type: 'started'; searchId: string } | { type: 'progress'; stage: string; message: string } | { type: 'complete'; found?: number; searchId: string; counts: {search:number;fetch:number;agent:number}; cacheHit: boolean };
+export type HuntMessage = { type: 'started'; searchId: string } | { type: 'progress'; stage: string; message: string } | { type: 'complete'; found?: number; dropped?: { filter: string; count: number }[]; searchId: string; counts: {search:number;fetch:number;agent:number}; cacheHit: boolean };
 const limit = (value: string|undefined, fallback: number,min: number,max:number) => {
   const parsed=Number(value);return value && Number.isFinite(parsed) ? Math.floor(Math.min(max,Math.max(min,parsed))) : fallback;
 };
 
 // Web-only server orchestration. Durable writes are awaited before completion is emitted.
-export async function executeHunt(user: { id:string;name:string }, refresh:boolean, signal:AbortSignal, send:(event:HuntMessage)=>void) {
+export async function executeHunt(user: { id:string;name:string }, refresh:boolean, signal:AbortSignal, send:(event:HuntMessage)=>void, form?:unknown) {
   await ensureProfile(user.id,user.name);
   await reconcileStaleSearches(user.id);
   if(await hasRunningSearch(user.id)) throw new HuntInputError('A hunt is already running for your account. Wait for it to finish, then try again.');
-  const [prefs,resume,excludedHosts]=await Promise.all([getPreferences(user.id),getResume(user.id),skippedHosts()]);
-  if(!prefs?.role || prefs.role.trim().length<2) throw new HuntInputError('Save a role before running a hunt.');
-  const hash=createHash('sha256').update(JSON.stringify({...prefs,updated_at:undefined,resume:resume?.uploaded_at??null,excludedHosts:excludedHosts.sort()})).digest('hex');
-  const snapshot={...prefs,hash,resume_skills:resume?resumeSkills(resume.extracted_text):[]};
+  const [saved,resume,excludedHosts]=await Promise.all([getPreferences(user.id),getResume(user.id),skippedHosts()]);
+  // The form wins even when unsaved; the saved row is the fallback (e.g. a plain refresh).
+  const candidate=form ?? (saved ? {...saved,filters:normalizeFilters(saved.filters)} : null);
+  if(!candidate) throw new HuntInputError('Enter a role before running a hunt.');
+  const parsed=huntInputSchema.safeParse(candidate);
+  if(!parsed.success) throw new HuntInputError(parsed.error.issues[0]?.message ?? 'Save a role before running a hunt.');
+  const input:HuntInput=parsed.data;
+  const skills=resume?resumeSkills(resume.extracted_text):[];
+  const prefs=toRow(input);
+  const hash=createHash('sha256').update(JSON.stringify({...prefs,resume:resume?.uploaded_at??null,excludedHosts:excludedHosts.sort()})).digest('hex');
+  const snapshot={...prefs,hash,resume_skills:skills};
   const cached=refresh ? null : await findCachedSearch(user.id,hash);
   // A saved personal TinyFish key runs unmetered; otherwise a live (non-cached) hunt costs one credit.
   const wallet=await getWallet(user.id);
@@ -64,19 +72,22 @@ export async function executeHunt(user: { id:string;name:string }, refresh:boole
     await trace('search',null,null,true,'Hunt started with saved preferences and extracted resume skill hints.');
     const apiKey=ownKey??process.env.TINYFISH_API_KEY?.trim();
     if(!apiKey) throw new Error('Search is not configured: add your own TinyFish key on the Credits page.');
-    const preferences={...defaultPreferences,role:prefs.role,profession:prefs.profession,location:prefs.location_label,country:prefs.location_country_code,seniority:prefs.seniority,workMode:prefs.work_mode,visa:prefs.visa==='needs_sponsorship'?'needs_sponsorship' as const:'any' as const,keywords:prefs.keywords.join(', '),resumeKeywords:snapshot.resume_skills};
+    const preferences=toPreferences(input,skills);
     const result=await runSearch(preferences,run.id,apiKey,workSignal,emit,{maxAgentRuns:limit(process.env.MAX_AGENT_RUNS,2,0,2),agentDuration:limit(process.env.AGENT_DURATION_SECONDS,90,30,120),budgetMs:HUNT_BUDGET_MS,skippedHosts:excludedHosts,stats});
     await writes;
     if(writeError) throw writeError;
     workSignal.throwIfAborted();
     await trace('parse',null,null,true,`${stats.extracted} records extracted; ${stats.duplicatesRemoved} duplicate records merged.`);
-    await trace('rank',null,null,true,`${result.listings.length} matched listings; ${stats.filteredOut} known mismatches removed; resume tokens included in ranking.`);
-    await insertListings(result.listings.map(job=>({userId:user.id,searchId:run.id,dedupeKey:canonicalUrl(job.apply_url),title:job.title,company:job.company,location:job.location,seniority:job.seniority,workMode:job.work_mode,visaSignal:job.visa_signal,snippet:job.snippet,applyUrl:job.apply_url,sourceUrl:job.source_url,sourceName:job.source_name,score:job.match_score,matchReasons:[...job.match_reasons,...job.uncertainties],fetchedAt:job.checked_at})));
+    const dropped=Object.entries(result.drops).sort((a,b)=>b[1]-a[1]).map(([key,count])=>({filter:hardFilterLabels[key]??key,count}));
+    const droppedTotal=dropped.reduce((sum,item)=>sum+item.count,0);
+    await trace('rank',null,null,true,`${result.listings.length} matched listings; hard filters dropped ${droppedTotal}${dropped.length?` (${dropped.map(item=>`${item.filter} ${item.count}`).join(', ')})`:''}; resume tokens included in ranking.`);
+    await patchSearchSnapshot(run.id,{hard_filter_drops:result.drops,hard_filter_drop_total:droppedTotal});
+    await insertListings(result.listings.map(job=>({userId:user.id,searchId:run.id,dedupeKey:canonicalUrl(job.apply_url),title:job.title,company:job.company,location:job.location,seniority:job.seniority,workMode:job.work_mode,visaSignal:job.visa_signal,snippet:job.snippet,applyUrl:job.apply_url,sourceUrl:job.source_url,sourceName:job.source_name,score:job.match_score,matchReasons:job.match_reasons,uncertainties:job.uncertainties,facts:job.facts,fetchedAt:job.checked_at})));
     const counts={search:stats.searchRequests,fetch:stats.fetchRequests,agent:stats.agentRuns};
     // A hunt that found nothing is not billed, and is not cached (see findCachedSearch).
     if(!result.listings.length) await refund();
     await finishSearch(run.id,'done',null,counts);
-    send({type:'complete',searchId:run.id,counts,cacheHit:false,found:result.listings.length});
+    send({type:'complete',searchId:run.id,counts,cacheHit:false,found:result.listings.length,dropped});
   }catch(error){
     await writes;
     const message=signal.aborted?'Hunt stopped or reached its time limit. Completed trace events are retained.':error instanceof Error?error.message:'Hunt failed.';

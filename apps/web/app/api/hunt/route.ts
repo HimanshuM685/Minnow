@@ -22,7 +22,7 @@ export async function GET(request:Request){
 export async function POST(request:Request){
   const user=await getUser();
   if(!user) return Response.json({error:'Your session expired. Sign in again.'},{status:401});
-  const body=await request.json().catch(()=>({})) as {refresh?:boolean};
+  const body=await request.json().catch(()=>({})) as {refresh?:boolean;form?:unknown};
   const encoder=new TextEncoder();
   // Deliberately not tied to request.signal: a dropped connection must not abandon a charged hunt.
   const signal=AbortSignal.timeout(HARD_LIMIT_MS);
@@ -32,7 +32,7 @@ export async function POST(request:Request){
   const send=(value:unknown)=>write(`data: ${JSON.stringify(value)}\n\n`);
   const work=(async()=>{
     const heartbeat=setInterval(()=>write(': heartbeat\n\n'),10_000);
-    try{await executeHunt(user,body.refresh===true,signal,send);}
+    try{await executeHunt(user,body.refresh===true,signal,send,body.form);}
     catch(error){send({type:'error',message:error instanceof Error?error.message:'Could not persist or finish the hunt.'});}
     finally{clearInterval(heartbeat);if(connected){try{controller?.close();}catch{}}}
   })();

@@ -117,7 +117,7 @@ export async function runSearch(
     progress('agent', `Scanning ${host} with TinyFish Agent…`);
     try {
       const result = await client.agent(candidate.url, prefs, agentSeconds, message => progress('agent', `${host}: ${message}`));
-      const jobs = extractAgent(result, candidate.url);
+      const jobs = extractAgent(result, candidate.url, prefs.filters.skills);
       raw.push(...jobs);
       report({ url: candidate.url, name: host, stage: 'agent', status: jobs.length ? 'ok' : 'empty', message: jobs.length ? `${jobs.length} openings extracted by Agent` : 'Agent found no structured matching openings', count: jobs.length });
       partial();
@@ -141,5 +141,5 @@ export async function runSearch(
   stats.filteredOut = matched.filteredOut;
   stats.companies = new Set(matched.listings.map(job => job.company.toLowerCase())).size;
   stats.durationMs = Date.now() - started;
-  return { runId, preferences: prefs, listings: matched.listings.slice(0, 60), reports, stats, checkedAt: new Date().toISOString(), cached: false };
+  return { runId, preferences: prefs, listings: matched.listings.slice(0, 60), reports, stats, checkedAt: new Date().toISOString(), cached: false, drops: matched.drops };
 }

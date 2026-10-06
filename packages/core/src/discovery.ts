@@ -1,4 +1,6 @@
 import type { Preferences, SourceName } from './contracts';
+import { countryAliases } from './geography';
+import { seniorityFor } from './filters';
 import { canonicalUrl, companyKey, isJobUrl, publicUrl, sourceFor } from './urls';
 
 export interface SearchHit { title: string; snippet: string; url: string; date?: string; }
@@ -7,17 +9,27 @@ export interface Candidate extends SearchHit { source: SourceName; priority: num
 
 const domains: Partial<Record<SourceName, string>> = {
   greenhouse: 'boards.greenhouse.io,job-boards.greenhouse.io',
-  lever: 'jobs.lever.co', ashby: 'jobs.ashbyhq.com',
+  lever: 'jobs.lever.co', ashby: 'jobs.ashbyhq.com', workday: 'myworkdayjobs.com',
   portal: 'builtin.com,wellfound.com,internshala.com,weworkremotely.com,remotive.com',
 };
 const allBoards = `${Object.values(domains).join(',')},linkedin.com,facebook.com,youtube.com,pinterest.com,reddit.com,quora.com`;
 
+const employmentText = { any: '', full_time: 'full-time', part_time: 'part-time', contract: 'contract', freelance: 'freelance', temporary: 'temporary', internship: 'internship', apprenticeship: 'apprenticeship' };
+const workModeText = { any: '', remote: 'remote', hybrid: 'hybrid', onsite: 'on-site' };
+
+// Query text only: role, keywords, city, country, work mode, employment type and company names.
+// Salary, benefits, stage and radius are not search operators, so they are applied after parsing.
 export function buildQueries(prefs: Preferences): SearchQuery[] {
-  const level = { any: '', intern: 'internship intern', new_grad: 'new graduate entry level', mid: '', senior: 'senior' }[prefs.seniority];
-  const place = [prefs.location, prefs.workMode === 'remote' ? 'remote' : ''].filter(Boolean).join(' ');
-  const base = `${prefs.role} ${prefs.profession} ${level} ${place}`.trim().replace(/\s+/g, ' ');
+  const f = prefs.filters;
+  const seniority = f.experience.band === 'any' ? prefs.seniority : seniorityFor(f.experience);
+  const level = { any: '', intern: 'internship intern', new_grad: 'new graduate entry level', mid: '', senior: 'senior' }[seniority];
+  const countryName = prefs.country ? countryAliases[prefs.country]?.[0] ?? '' : '';
+  const place = [prefs.location, countryName && !prefs.location.toLowerCase().includes(countryName) ? countryName : '', workModeText[prefs.workMode]].filter(Boolean).join(' ');
+  const companies = f.companiesInclude.length ? `(${f.companiesInclude.map(name => `"${name}"`).join(' OR ')})` : '';
+  const excluded = f.companiesExclude.map(name => `-"${name}"`).join(' ');
+  const base = [prefs.role, prefs.profession, prefs.keywords, level, employmentText[f.employmentType], place, companies, excluded].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
   return [...new Set(prefs.sources)].map(source => ({
-    name: { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', portal: 'Public job boards' }[source],
+    name: { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday', portal: 'Public job boards' }[source],
     query: `${base} ${source === 'careers' ? 'careers open positions apply' : 'jobs apply'}`,
     domains: domains[source], exclude: source === 'careers' ? allBoards : 'linkedin.com',
   }));

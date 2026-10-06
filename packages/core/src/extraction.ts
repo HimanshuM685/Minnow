@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { listingSchema, seniorities, workModes, visaSignals, type Listing, type Preferences } from './contracts';
 import { canonicalUrl, hash, isJobUrl, publicUrl, sourceFor } from './urls';
 import { roleFit } from './matching';
+import { inferFacts, parsePostedAt } from './facts';
 
 export interface FetchPage {
   url: string; final_url?: string; title?: string | null; description?: string | null;
@@ -131,7 +132,8 @@ export function extractPage(page: FetchPage, prefs: Preferences): { listings: Li
       title, company: companyFrom(page, url), location, apply_url: url, source_url: page.url,
       seniority: inferSeniority(title, plain(text)), work_mode: inferWorkMode(location, title, text),
       visa_signal: visa.signal, visa_evidence: visa.evidence, snippet: excerpt(text, page.description),
-      posted_at: page.published_date && !Number.isNaN(Date.parse(page.published_date)) ? page.published_date : null,
+      posted_at: parsePostedAt(text, page.published_date),
+      facts: { ...inferFacts(title, plain(text), prefs.filters.skills), ...(visa.signal === 'sponsors' ? { benefits: [...new Set([...(inferFacts(title, plain(text)).benefits ?? []), 'visa_support' as const])] } : {}) },
       verification: 'detail',
     }));
   } else {
@@ -158,7 +160,7 @@ const agentItem = z.object({
   seniority: z.enum(seniorities), work_mode: z.enum(workModes), visa_signal: z.enum(visaSignals),
 });
 
-export function extractAgent(result: unknown, sourceUrl: string): Listing[] {
+export function extractAgent(result: unknown, sourceUrl: string, skills: string[] = []): Listing[] {
   if (typeof result === 'string') { try { result = JSON.parse(result); } catch { return []; } }
   const parsed = z.object({ listings: z.array(z.unknown()).max(15) }).safeParse(result);
   if (!parsed.success) return [];
@@ -171,6 +173,7 @@ export function extractAgent(result: unknown, sourceUrl: string): Listing[] {
     return [makeListing({
       ...item.data, title: cleanTitle(item.data.title), apply_url: url, source_url: sourceUrl,
       visa_signal: visa.signal, visa_evidence: visa.evidence, location: item.data.location || 'Not stated',
+      facts: inferFacts(item.data.title, `${item.data.snippet} ${item.data.visa_evidence}`, skills),
       extraction: 'agent', verification: 'detail',
     })];
   });

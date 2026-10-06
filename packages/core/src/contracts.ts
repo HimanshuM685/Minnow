@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { defaultFilters, huntFiltersSchema } from './filters';
 
-export const sourceNames = ['careers', 'greenhouse', 'lever', 'ashby', 'portal'] as const;
+export const sourceNames = ['careers', 'greenhouse', 'lever', 'ashby', 'workday', 'portal'] as const;
 export const seniorities = ['intern', 'new_grad', 'mid', 'senior', 'unknown'] as const;
 export const workModes = ['remote', 'hybrid', 'onsite', 'unknown'] as const;
 export const visaSignals = ['sponsors', 'no_sponsor', 'unknown'] as const;
@@ -15,16 +16,32 @@ export const preferencesSchema = z.object({
   seniority: z.enum(['any', 'intern', 'new_grad', 'mid', 'senior']).default('any'),
   workMode: z.enum(['any', 'remote', 'hybrid', 'onsite']).default('any'),
   visa: z.enum(['any', 'needs_sponsorship', 'confirmed_only']).default('any'),
-  sources: z.array(z.enum(sourceNames)).min(1, 'Select at least one source to search.').max(5).default([...sourceNames]),
+  sources: z.array(z.enum(sourceNames)).min(1, 'Select at least one source to search.').max(6).default(['careers', 'greenhouse', 'lever', 'ashby', 'portal']),
   careersUrls: z.array(z.string().url().max(1500)).max(3).default([]),
   useAgent: z.boolean().default(true),
+  filters: huntFiltersSchema.default(defaultFilters),
 });
 export type Preferences = z.infer<typeof preferencesSchema>;
 
 export const defaultPreferences: Preferences = {
   role: '', location: '', country: '', keywords: '', profession: '', resumeKeywords: [], seniority: 'any',
-  workMode: 'any', visa: 'any', sources: [...sourceNames], careersUrls: [], useAgent: true,
+  workMode: 'any', visa: 'any', sources: ['careers', 'greenhouse', 'lever', 'ashby', 'portal'], careersUrls: [], useAgent: true, filters: defaultFilters,
 };
+
+// Facts a posting states about itself. Missing means not stated.
+export const listingFactsSchema = z.object({
+  employment_type: z.enum(['full_time', 'part_time', 'contract', 'freelance', 'temporary', 'internship', 'apprenticeship']).optional(),
+  education: z.enum(['none', 'bachelor', 'master', 'phd']).optional(),
+  years_min: z.number().nullable().optional(), years_max: z.number().nullable().optional(),
+  salary: z.object({ min: z.number(), max: z.number(), currency: z.string(), period: z.enum(['hourly', 'monthly', 'annual']) }).optional(),
+  benefits: z.array(z.enum(['visa_support', 'equity', 'relocation', 'health'])).optional(),
+  department: z.enum(['engineering', 'product', 'design', 'data', 'marketing', 'sales', 'operations']).optional(),
+  industry: z.enum(['ai', 'fintech', 'web3', 'healthcare', 'gaming', 'edtech', 'cybersecurity', 'saas', 'robotics', 'climate']).optional(),
+  company_size: z.enum(['startup_1_10', '11_50', '51_200', '201_1000', 'enterprise']).optional(),
+  company_stage: z.enum(['pre_seed', 'seed', 'series_a', 'series_b', 'growth', 'public']).optional(),
+  language: z.string().optional(), skills_found: z.array(z.string()).optional(),
+});
+export type ListingFacts = z.infer<typeof listingFactsSchema>;
 
 export const listingSchema = z.object({
   id: z.string(), title: z.string().min(2).max(200), company: z.string().min(1).max(120),
@@ -36,6 +53,7 @@ export const listingSchema = z.object({
   extraction: z.enum(['fetch', 'agent']), verification: z.enum(['detail', 'board']),
   match_score: z.number().min(0).max(100), match_reasons: z.array(z.string()),
   uncertainties: z.array(z.string()),
+  facts: listingFactsSchema.default({}),
 });
 export type Listing = z.infer<typeof listingSchema>;
 export type SourceName = typeof sourceNames[number];
@@ -68,6 +86,7 @@ export interface SearchResult {
   stats: RunStats;
   checkedAt: string;
   cached: boolean;
+  drops: Record<string, number>;
 }
 export type Stage = 'search' | 'fetch' | 'agent' | 'rank' | 'complete';
 export type SearchEvent =
@@ -82,5 +101,5 @@ export const labels = {
   seniority: { any: 'Any experience', intern: 'Internship', new_grad: 'New grad', mid: 'Mid-level', senior: 'Senior', unknown: 'Experience not stated' },
   workMode: { any: 'Any work mode', remote: 'Remote', hybrid: 'Hybrid', onsite: 'Onsite', unknown: 'Work mode not stated' },
   visa: { sponsors: 'Sponsorship mentioned', no_sponsor: 'No sponsorship', unknown: 'Sponsorship not stated' },
-  source: { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', portal: 'Job boards' },
+  source: { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday', portal: 'Job boards' },
 };

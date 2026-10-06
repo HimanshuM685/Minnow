@@ -1,4 +1,6 @@
 export * from './contracts';
+export * from './filters';
+export * from './facts';
 export * from './sse';
 export * from './urls';
 export * from './discovery';

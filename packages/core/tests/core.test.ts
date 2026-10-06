@@ -121,7 +121,7 @@ test('ranking respects experience, city aliases, keywords, and sponsorship uncer
   ], search);
   assert.deepEqual(matched.listings.map(item => item.id), ['sponsor', 'unknown', 'refused']);
   assert.ok(matched.listings[0].match_reasons.includes('Mentions python'));
-  assert.ok(matched.listings[1].uncertainties.includes('Sponsorship not confirmed'));
+  assert.ok(matched.listings[1].uncertainties.includes('Visa not stated'));
   assert.equal(matchListings([job()], { ...search, visa: 'confirmed_only' }).listings.length, 0);
 });
 
@@ -157,4 +157,83 @@ test('extracted resume tokens boost fit and contribute a visible match reason', 
   const boosted=matchListings([job()],{ ...prefs,resumeKeywords:['python'] }).listings[0];
   assert.ok(boosted.match_score>base.match_score);
   assert.ok(boosted.match_reasons.includes('Resume skill: python'));
+});
+
+// ---- Hunt filters: hard filters drop (and are counted), soft filters only rank ----
+import { normalizeFilters, inferFacts, parsePostedAt } from '../src/index.js';
+const withFilters = (filters: object, extra: object = {}) => ({ ...prefs, seniority: 'any' as const, ...extra, filters: normalizeFilters(filters) });
+const facts = (value: object) => ({ facts: value as Listing['facts'] });
+
+test('hard filters drop and report which filter removed each listing', () => {
+  const listings = [
+    job({ id: 'ok', title: 'Software Engineer', seniority: 'unknown', work_mode: 'hybrid', ...facts({ employment_type: 'full_time' }) }),
+    job({ id: 'onsite', company: 'B', apply_url: `${board}/jobs/2`, title: 'Software Engineer', seniority: 'unknown', work_mode: 'onsite' }),
+    job({ id: 'contract', company: 'C', apply_url: `${board}/jobs/3`, title: 'Software Engineer', seniority: 'unknown', work_mode: 'hybrid', ...facts({ employment_type: 'contract' }) }),
+    job({ id: 'excluded', company: 'Evil Corp', apply_url: `${board}/jobs/4`, title: 'Software Engineer', seniority: 'unknown', work_mode: 'hybrid' }),
+    job({ id: 'kw', company: 'D', apply_url: `${board}/jobs/5`, title: 'Software Engineer', snippet: 'Requires clearance', seniority: 'unknown', work_mode: 'hybrid' }),
+    job({ id: 'old', company: 'E', apply_url: `${board}/jobs/6`, title: 'Software Engineer', seniority: 'unknown', work_mode: 'hybrid', posted_at: new Date(Date.now() - 20 * 86400_000).toISOString() }),
+  ];
+  const result = matchListings(listings, withFilters({ employmentType: 'full_time', companiesExclude: ['Evil Corp'], excludeKeywords: ['clearance'], postedWithin: '7d' }, { workMode: 'hybrid', location: '', country: '' }));
+  assert.deepEqual(result.listings.map(item => item.id), ['ok']);
+  assert.deepEqual(result.drops, { workMode: 1, employmentType: 1, companyExcluded: 1, keywordExcluded: 1, posted: 1 });
+  assert.ok(result.listings[0].match_reasons.includes('hybrid') && result.listings[0].match_reasons.includes('full time'));
+});
+
+test('experience bands use stated years, then seniority; unknown stays in with a note', () => {
+  const rows = [
+    job({ id: 'y2', seniority: 'unknown', company: 'A', apply_url: `${board}/jobs/11`, ...facts({ years_min: 2 }) }),
+    job({ id: 'y6', seniority: 'unknown', company: 'B', apply_url: `${board}/jobs/12`, ...facts({ years_min: 6 }) }),
+    job({ id: 'senior', seniority: 'senior', company: 'C', apply_url: `${board}/jobs/13` }),
+    job({ id: 'none', seniority: 'unknown', company: 'D', apply_url: `${board}/jobs/14` }),
+  ];
+  const result = matchListings(rows, withFilters({ experience: { band: '1-3' } }));
+  assert.deepEqual(result.listings.map(item => item.id).sort(), ['none', 'y2']);
+  assert.equal(result.drops.experience, 2);
+  assert.ok(result.listings.find(item => item.id === 'none')!.uncertainties.includes('Experience not stated'));
+});
+
+test('radius keeps unknown cities, drops far ones, and ignores Remote', () => {
+  const rows = [
+    job({ id: 'near', location: 'Whitefield, Bengaluru', seniority: 'unknown', company: 'A', apply_url: `${board}/jobs/21` }),
+    job({ id: 'far', location: 'Mumbai, India', seniority: 'unknown', company: 'B', apply_url: `${board}/jobs/22` }),
+    job({ id: 'unknown', location: 'India', seniority: 'unknown', company: 'C', apply_url: `${board}/jobs/23` }),
+  ];
+  const local = matchListings(rows, withFilters({ radiusKm: 25 }, { location: 'Bengaluru', country: 'IN' }));
+  assert.deepEqual(local.listings.map(item => item.id).sort(), ['near', 'unknown']);
+  assert.equal(local.drops.radius, 1);
+  assert.ok(local.listings.find(item => item.id === 'unknown')!.uncertainties.includes('Location not stated'));
+  assert.equal(matchListings(rows, withFilters({ radiusKm: 25 }, { location: 'Remote', country: '' })).drops.radius, undefined);
+});
+
+test('skills ALL vs ANY, salary overlap and currency mismatch rank without dropping', () => {
+  const rows = [
+    job({ id: 'both', seniority: 'unknown', company: 'A', apply_url: `${board}/jobs/31`, ...facts({ skills_found: ['TypeScript', 'React'], salary: { min: 90000, max: 120000, currency: 'USD', period: 'annual' } }) }),
+    job({ id: 'one', seniority: 'unknown', company: 'B', apply_url: `${board}/jobs/32`, ...facts({ skills_found: ['TypeScript'], salary: { min: 40, max: 50, currency: 'EUR', period: 'hourly' } }) }),
+    job({ id: 'none', seniority: 'unknown', company: 'C', apply_url: `${board}/jobs/33` }),
+  ];
+  const filters = { skills: ['TypeScript', 'React'], salary: { min: 100000, max: 150000, currency: 'USD', period: 'annual' } };
+  const all = matchListings(rows, withFilters({ ...filters, skillMode: 'all' }));
+  assert.equal(all.listings.length, 3, 'nothing is dropped by soft filters');
+  assert.deepEqual(all.listings.map(item => item.id), ['both', 'one', 'none']);
+  assert.ok(all.listings[0].match_reasons.includes('Skill: TypeScript, React') && all.listings[0].match_reasons.includes('Salary overlaps your range'));
+  assert.ok(all.listings[1].uncertainties.includes('Currency differs') && all.listings[1].uncertainties.includes('Missing skills: React'));
+  assert.equal(matchListings(rows, withFilters({ ...filters, skillMode: 'any' })).listings.length, 3);
+});
+
+test('queries carry role, keywords, city, country, mode, employment type and company names only', () => {
+  const [query] = buildQueries(withFilters({ employmentType: 'contract', companiesInclude: ['Acme'], companiesExclude: ['Evil'], salary: { min: 5, max: 9, currency: 'USD', period: 'annual' }, radiusKm: 25, }, { keywords: 'python', location: 'Berlin', country: 'DE', workMode: 'hybrid', sources: ['careers', 'workday'] }));
+  for (const part of ['Software engineer', 'python', 'Berlin', 'germany', 'hybrid', 'contract', '"Acme"', '-"Evil"']) assert.ok(query.query.includes(part), part);
+  assert.ok(!/25|salary|\b5\b/.test(query.query.replace(/Software engineer/i, '')));
+  assert.deepEqual(buildQueries(withFilters({}, { sources: ['careers', 'workday'] })).map(item => item.name), ['Company careers', 'Workday']);
+});
+
+test('page facts are read only when stated', () => {
+  const text = 'Full-time. Salary: $90,000 - $120,000 per year. 3+ years of experience. A Bachelor’s degree is required. Equity and health insurance. Series B startup.';
+  const facts = inferFacts('Backend Engineer', text, ['Go', 'Python']);
+  assert.equal(facts.employment_type, 'full_time'); assert.equal(facts.years_min, 3); assert.equal(facts.education, 'bachelor');
+  assert.deepEqual(facts.salary, { min: 90000, max: 120000, currency: 'USD', period: 'annual' });
+  assert.deepEqual(facts.benefits, ['equity', 'health']); assert.equal(facts.company_stage, 'series_b'); assert.equal(facts.department, 'engineering');
+  assert.equal(inferFacts('Backend Engineer', 'We are building things.').salary, undefined);
+  assert.equal(parsePostedAt('Posted 3 days ago', null, 1_000_000_000_000), new Date(1_000_000_000_000 - 3 * 86_400_000).toISOString());
+  assert.equal(parsePostedAt('nothing here'), null);
 });

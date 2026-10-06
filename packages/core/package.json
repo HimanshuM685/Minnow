@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./contracts": "./src/contracts.ts",
+    "./filters": "./src/filters.ts",
     "./sse": "./src/sse.ts"
   },
   "scripts": {
