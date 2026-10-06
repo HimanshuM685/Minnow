@@ -89,7 +89,7 @@ export class TinyFishClient {
     if (country) url.searchParams.set('location', country);
     if (query.domains) url.searchParams.set('include_domains', query.domains);
     if (query.exclude) url.searchParams.set('exclude_domains', query.exclude);
-    const data = await this.json(url.href, { method: 'GET' }) as { results?: SearchHit[] };
+    const data = await this.json(url.href, { method: 'GET' }, 15_000) as { results?: SearchHit[] };
     if (!Array.isArray(data.results)) throw new TinyFishError('TinyFish Search returned an unexpected response.');
     return data.results.filter(hit => typeof hit.url === 'string' && typeof hit.title === 'string').map(hit => ({ ...hit, snippet: hit.snippet ?? '' }));
   }
@@ -98,10 +98,10 @@ export class TinyFishClient {
     if (urls.length > 10) throw new Error('Fetch batches cannot exceed 10 URLs.');
     const data = await this.json('https://api.fetch.tinyfish.ai', {
       method: 'POST', body: JSON.stringify({
-        urls, format: 'markdown', links: true, ttl: 0, per_url_timeout_ms: 40_000,
+        urls, format: 'markdown', links: true, ttl: 600, per_url_timeout_ms: 30_000,
         purpose: `Read live job openings for ${prefs.role}. Preserve titles, company names, location, work mode, experience requirements, sponsorship statements and application links.`,
       }),
-    }, 75_000) as FetchResponse;
+    }, 50_000) as FetchResponse;
     if (!Array.isArray(data.results) || !Array.isArray(data.errors)) throw new TinyFishError('TinyFish Fetch returned an unexpected response.');
     this.stats.fetchedPages += data.results.length;
     return data;

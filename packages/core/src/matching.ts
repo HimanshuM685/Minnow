@@ -8,7 +8,8 @@ export function normalize(text: string): string {
   return text.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
     .replace(/\bengineering\b|\bengineers\b/g, 'engineer').replace(/\bdevelopment\b|\bdevelopers\b/g, 'developer')
     .replace(/\bdesigners\b/g, 'designer').replace(/\bbangalore\b/g, 'bengaluru')
-    .replace(/\bnyc\b/g, 'new york').replace(/\bsf\b/g, 'san francisco')
+    .replace(/\bml\b/g, 'machine learning').replace(/\bfront[ -]?end\b/g, 'frontend').replace(/\bback[ -]?end\b/g, 'backend').replace(/\bfull[ -]?stack\b/g, 'fullstack')
+    .replace(/\bswe\b|\bsde\b/g, 'software engineer').replace(/\bpm\b/g, 'product manager').replace(/\bnyc\b/g, 'new york').replace(/\bsf\b/g, 'san francisco')
     .replace(/\busa\b|\bu\.?s\.?a?\b/g, 'united states').replace(/\buk\b/g, 'united kingdom')
     .replace(/[^a-z0-9+#]+/g, ' ').trim();
 }
@@ -18,6 +19,8 @@ function roleWords(role: string): string[] {
   return words.length ? [...new Set(words)] : normalize(role).split(' ').filter(Boolean);
 }
 
+// A listing must match most of the role words; half a match ("Director of Engineering" for "Software Engineer") is noise.
+export const MIN_ROLE_FIT = 0.75;
 export function roleFit(title: string, role: string): number {
   const normalized = normalize(title);
   const words = new Set(normalized.split(' '));
@@ -70,6 +73,9 @@ function locationFit(job: Listing, prefs: Preferences): 'match' | 'unknown' | 'm
   if (places.some(place => location.includes(place) || place.includes(location))) return 'match';
   if (anywhere && job.work_mode === 'remote') return 'match';
   if (job.work_mode === 'remote' && (prefs.workMode === 'remote' || places.includes('remote'))) return 'unknown';
+  // Right country but no specific city (or a remote role open in that country): not a conflict, just unconfirmed.
+  if (country && countryFromLocation(job.location) === country && !cityCoords(job.location)) return 'unknown';
+  if (job.work_mode === 'remote' && country && (!knownCountry || knownCountry[0] === country)) return 'unknown';
   return 'mismatch';
 }
 
@@ -114,7 +120,7 @@ export function matchListings(listings: Listing[], prefs: Preferences): { listin
   for (const job of unique.listings) {
     const drop = (reason: string) => { drops[reason] = (drops[reason] ?? 0) + 1; };
     const fit = roleFit(job.title, prefs.role);
-    if (fit < 0.5) { drop('role'); continue; }
+    if (fit < MIN_ROLE_FIT) { drop('role'); continue; }
     const experience = experienceFit(job, filters, prefs);
     if (experience === 'mismatch') { drop('experience'); continue; }
     if (prefs.workMode !== 'any' && job.work_mode !== 'unknown' && job.work_mode !== prefs.workMode) { drop('workMode'); continue; }
@@ -149,11 +155,12 @@ export function matchListings(listings: Listing[], prefs: Preferences): { listin
     if (radiusNote) uncertainties.push(radiusNote);
     let score = fit * 45 + (job.verification === 'detail' ? 8 : 0) + (job.source_name !== 'portal' ? 5 : 0);
     if (place === 'match') { score += 15; reasons.push(job.location); }
-    if (place === 'unknown') uncertainties.push(job.work_mode === 'remote' ? 'Check remote location eligibility' : 'Location not confirmed');
+    // Unconfirmed listings stay, but rank below confirmed ones when the user named a place.
+    if (place === 'unknown') { if (prefs.location || prefs.country) score -= 8; uncertainties.push(job.work_mode === 'remote' ? 'Check remote location eligibility' : 'Location not confirmed'); }
     if (experience === 'match') { score += 10; reasons.push('Experience matches'); }
     if (experience === 'unknown') uncertainties.push('Experience not stated');
     if (prefs.workMode !== 'any' && job.work_mode === prefs.workMode) { score += 5; reasons.push(label(prefs.workMode === 'onsite' ? 'on-site' : prefs.workMode)); }
-    if (prefs.workMode !== 'any' && job.work_mode === 'unknown') uncertainties.push('Work mode not stated');
+    if (prefs.workMode !== 'any' && job.work_mode === 'unknown') { score -= 3; uncertainties.push('Work mode not stated'); }
     if (filters.employmentType !== 'any') {
       if (employment === filters.employmentType) { score += 4; reasons.push(label(employment)); } else if (!employment) uncertainties.push('Employment type not stated');
     }
@@ -208,7 +215,7 @@ export function matchListings(listings: Listing[], prefs: Preferences): { listin
       if (job.facts.language === filters.language) { score += 2; reasons.push(`Language: ${filters.language}`); } else if (!job.facts.language) uncertainties.push('Posting language not detected');
     }
     if (filters.companiesInclude.some(name => company.includes(normalize(name)))) { score += 5; reasons.push(`Company: ${job.company}`); }
-    if (job.verification === 'board') uncertainties.push('Found on a live board; details not inspected');
+    if (job.verification === 'board') { score -= 6; uncertainties.push('Found on a live board; details not inspected'); }
     if (job.posted_at && now - postedMs < 14 * 86400_000) score += 2;
     ranked.push({ ...job, match_score: Math.min(100, Math.max(1, Math.round(score))), match_reasons: [...new Set(reasons)].slice(0, 8), uncertainties });
   }

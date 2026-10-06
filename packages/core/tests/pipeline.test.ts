@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { defaultPreferences, type SearchEvent } from '../src/contracts.js';
 import { runSearch } from '../../../apps/web/lib/pipeline.js';
 
-test('pipeline reads selected job details in one batch, escalates a thin board and retains partial failures', async () => {
+test('pipeline reads selected job details in small parallel batches, escalates a thin board and retains partial failures', async () => {
   const board = 'https://job-boards.greenhouse.io/acme';
   const detail = `${board}/jobs/12345`;
   const closed = `${board}/jobs/99999`;
@@ -20,7 +20,7 @@ test('pipeline reads selected job details in one batch, escalates a thin board a
       return Response.json({ results: [{ url: detail, title: 'Software Engineer Intern at Acme', snippet: 'Internships' }, { url: closed, title: 'Software Engineer Intern at Acme', snippet: 'Internships' }, { url: ashby, title: 'Jobs at Beta', snippet: 'Internships' }] });
     }
     if (url === 'https://api.fetch.tinyfish.ai') {
-      assert.equal(body?.ttl, 0);
+      assert.equal(body?.ttl, 600);
       assert.equal(body?.links, true);
       const urls = body?.urls as string[];
       assert.ok(urls.length <= 10);
@@ -49,7 +49,7 @@ test('pipeline reads selected job details in one batch, escalates a thin board a
     assert.equal(result.listings.length, 2);
     assert.equal(result.stats.companies, 2);
     assert.equal(result.stats.searchRequests, 2);
-    assert.equal(result.stats.fetchRequests, 1);
+    assert.equal(result.stats.fetchRequests, 3, 'three candidates are read in three parallel batches');
     assert.equal(result.stats.agentRuns, 1);
     assert.ok(result.reports.some(report => report.url === closed && report.status === 'error'));
     assert.ok(result.listings.every(job => job.verification === 'detail'));

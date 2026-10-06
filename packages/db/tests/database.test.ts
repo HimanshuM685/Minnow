@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { neonConfig } from '@neondatabase/serverless';
-import { reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
+import { forgetEnsuredProfiles, reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
 import { executeHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
 import { getSearch } from '../src/index';
 import { migrations } from '../src/schema';
@@ -41,6 +41,7 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
     } catch(error){return Response.json({message:error instanceof Error ? error.message : 'query failed'},{status:400});}
   };
   try {
+    forgetEnsuredProfiles();
     await ensureProfile('user-a','Ada'); await ensureProfile('user-b','Grace');
     assert.equal((await getWallet('user-a'))?.credits,10);
     for(let i=9;i>=0;i--) assert.equal(await spendCredit('user-a'),i);
@@ -110,13 +111,13 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
       const second='https://jobs.lever.co/beta/12345678-1234-1234-1234-123456789012';
       if(url.startsWith('https://api.search.')) return Response.json({results:[{url:direct,title:'Software Engineer Intern at Acme',snippet:''},{url:second,title:'Software Engineer Intern at Beta',snippet:''}]});
       const body=JSON.parse(String(init?.body)) as {urls:string[]};
-      return Response.json({results:body.urls.map((source,i)=>({url:source,title:`Software Engineer Intern at ${i?'Beta':'Acme'}`,text:'# Software Engineer Intern\n\nLocation: London\n\nWork arrangement: Hybrid\n\n## About the role\n\nBuild reliable software services in Python and SQL. Learn from experienced engineers and collaborate across teams to solve useful software problems. Apply for this position today.'})),errors:[]});
+      return Response.json({results:body.urls.map(source=>({url:source,title:`Software Engineer Intern at ${source.includes('lever')?'Beta':'Acme'}`,text:'# Software Engineer Intern\n\nLocation: London\n\nWork arrangement: Hybrid\n\n## About the role\n\nBuild reliable software services in Python and SQL. Learn from experienced engineers and collaborate across teams to solve useful software problems. Apply for this position today.'})),errors:[]});
     });
     try{
       const events:HuntMessage[]=[];
       await executeHunt({id:'user-a',name:'Ada'},true,new AbortController().signal,event=>events.push(event));
       const completed=events.find(event=>event.type==='complete');assert.ok(completed && completed.type==='complete');
-      assert.equal(completed.counts.search,5);assert.equal(completed.counts.fetch,1);assert.equal(completed.counts.agent,0);
+      assert.equal(completed.counts.search,5);assert.equal(completed.counts.fetch,2);assert.equal(completed.counts.agent,0);
       assert.equal((await getSearch(completed.searchId))?.status,'done');
       assert.equal((await getSearchListings(completed.searchId,'user-a')).length,2);
       const trace=await getSearchEvents(completed.searchId);

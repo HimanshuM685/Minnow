@@ -27,7 +27,10 @@ export function buildQueries(prefs: Preferences): SearchQuery[] {
   const place = [prefs.location, countryName && !prefs.location.toLowerCase().includes(countryName) ? countryName : '', workModeText[prefs.workMode]].filter(Boolean).join(' ');
   const companies = f.companiesInclude.length ? `(${f.companiesInclude.map(name => `"${name}"`).join(' OR ')})` : '';
   const excluded = f.companiesExclude.map(name => `-"${name}"`).join(' ');
-  const base = [prefs.role, prefs.profession, prefs.keywords, level, employmentText[f.employmentType], place, companies, excluded].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  // Long keyword lists over-constrain Search; the first few carry the intent. Profession only helps a one-word role.
+  const keywords = prefs.keywords.split(/[,;\n]/).map(item => item.trim()).filter(Boolean).slice(0, 3).join(' ');
+  const profession = prefs.role.trim().split(/\s+/).length > 1 ? '' : prefs.profession;
+  const base = [prefs.role, profession, keywords, level, employmentText[f.employmentType], place, companies, excluded].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
   return [...new Set(prefs.sources)].map(source => ({
     name: { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday', portal: 'Public job boards' }[source],
     query: `${base} ${source === 'careers' ? 'careers open positions apply' : 'jobs apply'}`,

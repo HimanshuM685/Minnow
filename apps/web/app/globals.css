@@ -106,3 +106,5 @@
 .check-group legend{grid-column:1/-1}
 .hunt-preferences label.check{display:flex;align-items:center;gap:8px;font-weight:500}
 .hunt-preferences select:disabled{opacity:.55;cursor:not-allowed}
+.skeleton-card{height:120px;border-radius:var(--radius);margin-bottom:16px;border:1px solid var(--border);background:linear-gradient(90deg,var(--subtle) 25%,var(--surface) 50%,var(--subtle) 75%);background-size:200% 100%;animation:shimmer 1.6s infinite}
+@keyframes shimmer{to{background-position:-200% 0}}

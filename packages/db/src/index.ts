@@ -10,13 +10,19 @@ const normalizeRow = (row: unknown) => Object.fromEntries(Object.entries(row as 
 const one = <T>(rows: unknown[]) => rows.length ? normalizeRow(rows[0]) as T : null;
 const rows = <T>(value: unknown[]) => value.map(normalizeRow) as T[];
 
+// One statement (a single round trip) creates the profile, preferences and wallet rows. Instances remember users
+// they already ensured for 10 minutes, so ordinary page loads skip it entirely.
+const ensured = new Map<string, number>();
+export const forgetEnsuredProfiles = () => ensured.clear();
 export async function ensureProfile(userId: string, name: string) {
+  if ((ensured.get(userId) ?? 0) > Date.now()) return null;
   await ensureSchema();
-  const sql = getSql();
-  const result = await sql`INSERT INTO profiles(user_id, display_name) VALUES(${userId}, ${name}) ON CONFLICT(user_id) DO UPDATE SET display_name = CASE WHEN profiles.display_name = '' THEN EXCLUDED.display_name ELSE profiles.display_name END RETURNING user_id, display_name, profession, headline, created_at, updated_at`;
-  await sql`INSERT INTO preferences(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING`;
-  await sql`INSERT INTO wallets(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING`;
-  return one<ProfileRow>(result)!;
+  const result = await getSql()`WITH p AS (INSERT INTO profiles(user_id, display_name) VALUES(${userId}, ${name}) ON CONFLICT(user_id) DO UPDATE SET display_name = CASE WHEN profiles.display_name = '' THEN EXCLUDED.display_name ELSE profiles.display_name END RETURNING user_id, display_name, profession, headline, created_at, updated_at),
+    pr AS (INSERT INTO preferences(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING),
+    w AS (INSERT INTO wallets(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING)
+    SELECT * FROM p`;
+  ensured.set(userId, Date.now() + 600_000);
+  return one<ProfileRow>(result);
 }
 export async function getProfile(userId: string) { return one<ProfileRow>(await getSql()`SELECT user_id, display_name, profession, headline, created_at, updated_at FROM profiles WHERE user_id=${userId}`); }
 export const FREE_CREDITS = 10;
@@ -58,6 +64,11 @@ export async function createSearch(input: SearchInput) { return one<SearchRow>(a
 export async function patchSearchSnapshot(id: string, patch: Record<string, unknown>) { await getSql()`UPDATE searches SET preference_snapshot = preference_snapshot || ${JSON.stringify(patch)}::jsonb WHERE id=${id}`; }
 export async function finishSearch(id: string, status: 'done' | 'error', error: string | null, counts: { search: number; fetch: number; agent: number }) { await getSql()`UPDATE searches SET status=${status},error=${error},search_count=${counts.search},fetch_count=${counts.fetch},agent_count=${counts.agent},finished_at=now() WHERE id=${id}`; }
 export async function addSearchEvent(searchId: string, step: SearchEventRow['step'], host: string | null, url: string | null, ok: boolean, detail: string) { await getSql()`INSERT INTO search_events(search_id,step,host,url,ok,detail) VALUES(${searchId},${step},${host},${url},${ok},${detail})`; }
+// Many trace rows in one round trip.
+export async function addSearchEvents(searchId: string, events: { step: SearchEventRow['step']; host: string | null; url: string | null; ok: boolean; detail: string }[]) {
+  if (!events.length) return;
+  await getSql()`INSERT INTO search_events(search_id,step,host,url,ok,detail) SELECT ${searchId}::uuid, step, host, url, ok, detail FROM unnest(${events.map(e => e.step)}::text[], ${events.map(e => e.host)}::text[], ${events.map(e => e.url)}::text[], ${events.map(e => e.ok)}::boolean[], ${events.map(e => e.detail)}::text[]) AS t(step, host, url, ok, detail)`;
+}
 export async function updateSourceHealth(host: string, ok: boolean, error: string | null) { await getSql()`INSERT INTO source_health(host,last_ok_at,last_error_at,last_error,ok_count,error_count) VALUES(${host},CASE WHEN ${ok} THEN now() ELSE NULL END,CASE WHEN ${ok} THEN NULL ELSE now() END,${error},CASE WHEN ${ok} THEN 1 ELSE 0 END,CASE WHEN ${ok} THEN 0 ELSE 1 END) ON CONFLICT(host) DO UPDATE SET last_ok_at=CASE WHEN ${ok} THEN now() ELSE source_health.last_ok_at END,last_error_at=CASE WHEN ${ok} THEN source_health.last_error_at ELSE now() END,last_error=CASE WHEN ${ok} THEN source_health.last_error ELSE ${error} END,ok_count=source_health.ok_count+CASE WHEN ${ok} THEN 1 ELSE 0 END,error_count=source_health.error_count+CASE WHEN ${ok} THEN 0 ELSE 1 END`; }
 export async function skippedHosts() { return rows<{ host: string }>(await getSql()`SELECT host FROM source_health WHERE skipped=true`).map(item => item.host); }
 export async function insertListings(items: DbListingInput[]) {

@@ -1,6 +1,8 @@
 import { buildQueries, discover, diversify, extractAgent, extractPage, matchListings, canonicalUrl, companyKey, publicUrl, type Listing, type Preferences, type RunStats, type SearchEvent, type SearchResult, type SourceReport, type SearchHit } from '@minnow/core';
 import { TinyFishClient, TinyFishError, type FetchResponse } from './tinyfish';
 
+// Stop early on Agent scans once this many listings already match the filters.
+const ENOUGH_LISTINGS = 8;
 export function emptyStats(): RunStats {
   return { searchRequests: 0, fetchRequests: 0, fetchedPages: 0, agentRuns: 0, discoveredUrls: 0, extracted: 0, duplicatesRemoved: 0, filteredOut: 0, companies: 0, durationMs: 0 };
 }
@@ -94,10 +96,14 @@ export async function runSearch(
     progress('fetch', `Reading ${candidates.length} live job and careers pages…`);
     // Small parallel batches keep one slow page from holding the whole read.
     const urls = candidates.map(item => item.url);
-    await Promise.all([urls.slice(0, 5), urls.slice(5)].filter(batch => batch.length).map(readBatch));
+    const size = Math.ceil(urls.length / 3);
+    await Promise.all([urls.slice(0, size), urls.slice(size, size * 2), urls.slice(size * 2)].filter(batch => batch.length).map(readBatch));
   }
 
-  const scanLimit = prefs.useAgent ? config.maxAgentRuns : 0;
+  // Agent scans are the slowest step: only run them when plain Fetch found too little.
+  const enough = matchListings(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs).listings.length >= ENOUGH_LISTINGS;
+  if (enough && stubborn.size) progress('rank', `Found enough matching openings (${ENOUGH_LISTINGS}+); skipping slower Agent scans.`);
+  const scanLimit = prefs.useAgent && !enough ? config.maxAgentRuns : 0;
   const distinctBoards = new Map<string, { url: string; priority: number }>();
   for (const page of [...stubborn.values()].sort((a, b) => b.priority - a.priority)) {
     if (!distinctBoards.has(companyKey(page.url))) distinctBoards.set(companyKey(page.url), page);
@@ -128,7 +134,7 @@ export async function runSearch(
   }));
   for (const candidate of stubborn.values()) {
     if (agentCompanies.has(companyKey(candidate.url))) continue;
-    report({ url: candidate.url, name: new URL(candidate.url).hostname, stage: 'agent', status: 'skipped', message: !scanLimit ? 'Agent scanning is disabled' : scans.length ? 'Agent run cap reached' : 'Not enough time left for an Agent scan', count: 0 });
+    report({ url: candidate.url, name: new URL(candidate.url).hostname, stage: 'agent', status: 'skipped', message: enough ? 'Skipped: enough openings already found' : !scanLimit ? 'Agent scanning is disabled' : scans.length ? 'Agent run cap reached' : 'Not enough time left for an Agent scan', count: 0 });
   }
   signal.throwIfAborted();
   if (candidates.length && stats.fetchedPages===0 && !reports.some(item=>item.stage==='agent' && ['ok','empty'].includes(item.status))) {

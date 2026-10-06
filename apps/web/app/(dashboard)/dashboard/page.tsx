@@ -8,7 +8,6 @@ const blank = (user_id: string): PreferenceRow => ({ user_id, role: '', professi
 export const dynamic = 'force-dynamic';
 export default async function HuntPage() {
   const user = await requireUser();
-  const wallet = await currentWallet(user);
-  const [preferences, resume, latest] = await Promise.all([getPreferences(user.id), getResume(user.id), latestSearch(user.id)]);
+  const [wallet, preferences, resume, latest] = await Promise.all([currentWallet(user), getPreferences(user.id), getResume(user.id), latestSearch(user.id)]);
   return <><div className="page-heading"><h1>Your next current starts here.</h1><p>Set your preferences. Minnow checks live careers pages and brings back the ones that fit.</p></div><HuntForm initial={preferences ?? blank(user.id)} skills={resume ? resumeSkills(resume.extracted_text) : []} latest={latest} configured={Boolean(wallet.hasKey || process.env.TINYFISH_API_KEY)} credits={wallet.hasKey ? null : wallet.credits} /></>;
 }

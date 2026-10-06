@@ -8,8 +8,8 @@ export async function savePreferences(value: unknown) {
   const user = await requireUser();
   const parsed = huntInputSchema.safeParse(value);
   if (!parsed.success) return { error: parsed.error.issues[0].message };
+  // No revalidation: the form already holds these values, and every other page reads fresh data itself.
   await storePreferences(user.id, toRow(parsed.data));
-  revalidatePath('/dashboard');
   return { ok: true };
 }
 export type ProfileActionResult = { ok?: boolean; error?: string };

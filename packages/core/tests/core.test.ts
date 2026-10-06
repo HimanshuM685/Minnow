@@ -237,3 +237,23 @@ test('page facts are read only when stated', () => {
   assert.equal(parsePostedAt('Posted 3 days ago', null, 1_000_000_000_000), new Date(1_000_000_000_000 - 3 * 86_400_000).toISOString());
   assert.equal(parsePostedAt('nothing here'), null);
 });
+
+test('shortlist matching: synonyms match, half-matched titles do not, and unconfirmed places rank lower', () => {
+  const rows = [
+    job({ id: 'ml', title: 'ML Engineer', seniority: 'unknown', company: 'A', apply_url: `${board}/jobs/41`, location: 'Bengaluru, India' }),
+    job({ id: 'director', title: 'Director of Engineering', seniority: 'unknown', company: 'B', apply_url: `${board}/jobs/42`, location: 'Bengaluru, India' }),
+    job({ id: 'country', title: 'Machine Learning Engineer', seniority: 'unknown', company: 'C', apply_url: `${board}/jobs/43`, location: 'India' }),
+    job({ id: 'remote-in', title: 'Machine Learning Engineer', seniority: 'unknown', company: 'D', apply_url: `${board}/jobs/44`, location: 'Remote - India', work_mode: 'remote' }),
+    job({ id: 'abroad', title: 'Machine Learning Engineer', seniority: 'unknown', company: 'E', apply_url: `${board}/jobs/45`, location: 'Berlin, Germany' }),
+  ];
+  const result = matchListings(rows, withFilters({}, { role: 'Machine Learning Engineer', location: 'Bengaluru', country: 'IN' }));
+  assert.deepEqual(result.listings.map(item => item.id), ['ml', 'country', 'remote-in'], 'confirmed city first, then same-country listings');
+  assert.equal(result.drops.role, 1);
+  assert.equal(result.drops.location, 1);
+  assert.ok(result.listings[1].uncertainties.includes('Location not confirmed'));
+});
+
+test('queries stay short: a few keywords, profession only for one-word roles', () => {
+  const [query] = buildQueries({ ...prefs, role: 'Product designer', profession: 'Design', keywords: 'figma, systems, research, motion, 3d', sources: ['careers'] });
+  assert.ok(query.query.includes('figma systems research') && !query.query.includes('motion') && !query.query.includes('Design '));
+});
