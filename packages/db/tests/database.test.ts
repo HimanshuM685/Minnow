@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { neonConfig } from '@neondatabase/serverless';
-import { spendCredits, forgetEnsuredProfiles, reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
+import { searchHistory, latestSearchWithResults, bestMatches, spendCredits, forgetEnsuredProfiles, reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
 import { executeHunt, prepareHunt, runHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
 import { getSearch } from '../src/index';
 import { migrations } from '../src/schema';
@@ -209,6 +209,20 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
       const empty=await createSearch({userId:'user-b',preferenceSnapshot:{hash:'empty-hash'}});
       await finishSearch(empty.id,'done',null,{search:1,fetch:0,agent:0});
       assert.equal(await findCachedSearch('user-b','empty-hash'),null);
+      // History is stored in the DB and survives empty hunts; the shortlist never goes blank; best matches dedupe across searches.
+      const history=await searchHistory('user-b');
+      assert.equal(history[0].id,empty.id,'newest first');
+      assert.equal(history[0].found,0,'an empty search is still listed');
+      assert.ok(history.some(row=>row.status==='error') && history.some(row=>row.found>0));
+      assert.equal((await latestSearchWithResults('user-b'))?.preference_snapshot.hash,'cache-false','falls back past the empty newest search');
+      const dup=(searchId:string,score:number)=>insertListings([{userId:'user-b',searchId,dedupeKey:'https://dup.example/jobs/1',title:'Engineer',company:'Dup',location:'London',seniority:'unknown',workMode:'hybrid',visaSignal:'unknown',snippet:'',applyUrl:'https://dup.example/jobs/1',sourceUrl:'https://dup.example',sourceName:'careers',score,matchReasons:[]}]);
+      const low=await createSearch({userId:'user-b',preferenceSnapshot:{role:'Engineer',hash:'low'}});await dup(low.id,40);await finishSearch(low.id,'done',null,{search:1,fetch:1,agent:0});
+      const high=await createSearch({userId:'user-b',preferenceSnapshot:{role:'Engineer',hash:'high'}});await dup(high.id,90);await finishSearch(high.id,'done',null,{search:1,fetch:1,agent:0});
+      const best=await bestMatches('user-b');
+      const dups=best.filter(row=>row.dedupe_key==='https://dup.example/jobs/1');
+      assert.equal(dups.length,1,'one row per job across searches');assert.equal(Number(dups[0].score),90);assert.equal(dups[0].search_role,'Engineer');
+      assert.equal(best[0].dedupe_key,'https://dup.example/jobs/1','best score first');
+      assert.deepEqual((await bestMatches('user-a')).filter(row=>row.user_id!=='user-a'),[],'never another user’s jobs');
     }finally{
       fetchMock.mock.restore();
       if(previousKey===undefined) delete process.env.TINYFISH_API_KEY;else process.env.TINYFISH_API_KEY=previousKey;

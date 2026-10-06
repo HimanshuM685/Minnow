@@ -1,5 +1,5 @@
 import { getSql } from './client';
-import type { DbListingInput, ListingRow, PreferenceRow, ProfileRow, WalletRow, ResumeRow, SearchEventRow, SearchInput, SearchRow, SourceHealthRow } from './types';
+import type { BestMatchRow, SearchHistoryRow, DbListingInput, ListingRow, PreferenceRow, ProfileRow, WalletRow, ResumeRow, SearchEventRow, SearchInput, SearchRow, SourceHealthRow } from './types';
 export * from './types';
 export { getSql } from './client';
 export { ensureSchema } from './schema';
@@ -85,6 +85,26 @@ export async function insertListings(items: DbListingInput[]) {
 }
 export async function getSearch(id: string, userId?: string) { return one<SearchRow>(await getSql()`SELECT id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at FROM searches WHERE id=${id} AND (${userId ?? null}::text IS NULL OR user_id=${userId ?? null})`); }
 export async function latestSearch(userId: string) { return one<SearchRow>(await getSql()`SELECT id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at FROM searches WHERE user_id=${userId} AND status='done' ORDER BY created_at DESC LIMIT 1`); }
+// Every search the user ever ran, newest first, with how many listings each kept. Rows are never deleted.
+export async function searchHistory(userId: string, limit = 50) {
+  const found = rows<SearchHistoryRow & { best: string | number | null }>(await getSql()`SELECT s.id,s.status,s.error,s.cache_hit,s.created_at,s.finished_at,s.preference_snapshot,
+    (SELECT count(*)::int FROM listings l WHERE l.search_id=s.id AND NOT l.hidden) AS found,
+    (SELECT max(l.score) FROM listings l WHERE l.search_id=s.id AND NOT l.hidden) AS best
+    FROM searches s WHERE s.user_id=${userId} ORDER BY s.created_at DESC LIMIT ${limit}`);
+  return found.map(row => ({ ...row, best: row.best === null ? null : Number(row.best) })) as SearchHistoryRow[];
+}
+// The shortlist must never go blank because the newest hunt found nothing: fall back to the last one that did.
+export async function latestSearchWithResults(userId: string) { return one<SearchRow>(await getSql()`SELECT id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at FROM searches s WHERE user_id=${userId} AND status='done' AND EXISTS(SELECT 1 FROM listings l WHERE l.search_id=s.id AND NOT l.hidden) ORDER BY created_at DESC LIMIT 1`); }
+// Best match logic across all searches: one row per job (highest score wins, newest breaks ties), best first.
+export async function bestMatches(userId: string, limit = 60) {
+  return rows<BestMatchRow>(await getSql()`SELECT * FROM (
+    SELECT DISTINCT ON (l.dedupe_key) l.id,l.search_id,l.user_id,l.dedupe_key,l.title,l.company,l.location,l.seniority,l.work_mode,l.visa_signal,l.snippet,l.apply_url,l.source_url,l.source_name,l.score,l.match_reasons,l.uncertainties,l.facts,l.fetched_at,l.hidden,l.hidden_reason,
+      s.preference_snapshot->>'role' AS search_role, s.created_at AS search_created_at
+    FROM listings l JOIN searches s ON s.id=l.search_id
+    WHERE l.user_id=${userId} AND NOT l.hidden AND s.status='done'
+    ORDER BY l.dedupe_key, l.score DESC, l.fetched_at DESC) best
+    ORDER BY score DESC, fetched_at DESC LIMIT ${limit}`);
+}
 export async function getSearchListings(id: string, userId?: string, includeHidden = false) { return rows<ListingRow>(await getSql()`SELECT id,search_id,user_id,dedupe_key,title,company,location,seniority,work_mode,visa_signal,snippet,apply_url,source_url,source_name,score,match_reasons,uncertainties,facts,fetched_at,hidden,hidden_reason FROM listings WHERE search_id=${id} AND (${userId ?? null}::text IS NULL OR user_id=${userId ?? null}) AND (${includeHidden} OR hidden=false) ORDER BY score DESC,company,title`); }
 export async function getSearchEvents(id: string) { return rows<SearchEventRow>(await getSql()`SELECT id,search_id,step,host,url,ok,detail,created_at FROM search_events WHERE search_id=${id} ORDER BY created_at,id`); }
 export async function findCachedSearch(userId: string, hash: string) { return one<SearchRow>(await getSql()`SELECT id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at FROM searches WHERE user_id=${userId} AND status='done' AND cache_hit=false AND preference_snapshot->>'hash'=${hash} AND preference_snapshot->>'deep' IS DISTINCT FROM 'true' AND created_at > now()-interval '15 minutes' AND EXISTS(SELECT 1 FROM listings l WHERE l.search_id=searches.id AND NOT l.hidden) ORDER BY created_at DESC LIMIT 1`); }

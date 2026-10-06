@@ -13,4 +13,6 @@ export interface ListingRow { id: string; search_id: string; user_id: string; de
 export interface SourceHealthRow { host: string; last_ok_at: string | null; last_error_at: string | null; last_error: string | null; ok_count: number; error_count: number; skipped: boolean; }
 
 export interface DbListingInput { userId: string; searchId: string; dedupeKey: string; title: string; company: string; location: string; seniority: string; workMode: string; visaSignal: string; snippet: string; applyUrl: string; sourceUrl: string; sourceName: string; score: number; matchReasons: string[]; uncertainties?: string[]; facts?: Record<string, unknown>; fetchedAt?: string; }
+export interface SearchHistoryRow { id: string; status: 'running' | 'done' | 'error'; error: string | null; cache_hit: boolean; created_at: string; finished_at: string | null; preference_snapshot: Record<string, unknown>; found: number; best: number | null; }
+export interface BestMatchRow extends ListingRow { search_role: string; search_created_at: string; }
 export interface SearchInput { userId: string; preferenceSnapshot: Record<string, unknown>; cacheHit?: boolean; }

@@ -9,6 +9,7 @@ export function AppSidebar({ email }: { email: string }) {
   const navItems = [
     { href: '/dashboard', label: 'Hunt', exact: true },
     { href: '/dashboard/listings', label: 'Shortlist', exact: false },
+    { href: '/dashboard/searches', label: 'Searches', exact: false },
     { href: '/dashboard/resume', label: 'Resume', exact: false },
     { href: '/credits', label: 'Credits', exact: false },
     { href: '/dashboard/settings', label: 'Settings', exact: false },

@@ -1,17 +1,41 @@
 import Link from 'next/link';
-import { ArrowUpRight, Check, MapPin, Clock3 } from 'lucide-react';
-import { getSearchListings, latestSearch, previousDedupeKeys } from '@minnow/db';
+import { bestMatches, getSearch, getSearchListings, latestSearch, latestSearchWithResults, previousDedupeKeys } from '@minnow/db';
 import { requireUser } from '@/lib/auth/session';
-import { hardFilterLabels } from '@minnow/core';
+import { JobCard } from '@/components/job-card';
+import { dropLines, searchSummary, searchTitle } from '@/lib/search-label';
 export const dynamic = 'force-dynamic';
-const names: Record<string, string> = { role: 'Role', place: 'Location', experience: 'Experience', mode: 'Work mode', skills: 'Skills', prefs: 'Your other filters', quality: 'Posting quality' };
-// Native tooltip: points earned out of points possible, only for the dimensions this user set.
-const breakdown = (facts: Record<string, unknown>) => Object.entries((facts.breakdown ?? {}) as Record<string, { earned: number; possible: number }>).map(([key, part]) => `${names[key] ?? key}: ${part.earned}/${part.possible}`).join('\n') || 'Match score';
-export default async function ListingsPage() {
-  const user = await requireUser(); const run = await latestSearch(user.id);
+const isId = (value?: string) => !!value && /^[0-9a-f-]{36}$/i.test(value);
+const when = (value: string) => new Date(value).toLocaleString();
+
+// Views: the last search that returned jobs (default, never blank because a newer search found nothing),
+// the best matches across every search, or one specific past search.
+export default async function ListingsPage({ searchParams }: { searchParams: Promise<{ view?: string; search?: string }> }) {
+  const user = await requireUser();
+  const params = await searchParams;
+  const tabs = (active: string) => <nav className="view-tabs" aria-label="Shortlist views">
+    <Link href="/dashboard/listings" className={active === 'latest' ? 'active' : ''}>Latest results</Link>
+    <Link href="/dashboard/listings?view=best" className={active === 'best' ? 'active' : ''}>Best matches</Link>
+    <Link href="/dashboard/searches">All searches</Link>
+  </nav>;
+
+  if (params.view === 'best') {
+    const jobs = await bestMatches(user.id);
+    return <><div className="page-heading"><h1>Best matches</h1><p>The strongest {jobs.length} openings across all your searches, one row per job, best score first.</p></div>{tabs('best')}
+      {!jobs.length ? <div className="empty-results"><h3>No matches saved yet.</h3><p>Run a hunt and its results are kept here for good.</p><Link href="/dashboard" className="primary-button">Start a hunt</Link></div>
+        : <div className="job-list">{jobs.map(job => <JobCard key={job.id} job={job} from={`${job.search_role || 'search'} · ${new Date(job.search_created_at).toLocaleDateString()}`} />)}</div>}</>;
+  }
+
+  const [newest, withResults, chosen] = await Promise.all([latestSearch(user.id), latestSearchWithResults(user.id), isId(params.search) ? getSearch(params.search!, user.id) : null]);
+  const run = chosen ?? withResults ?? newest;
   if (!run) return <><div className="page-heading"><h1>Your shortlist</h1></div><div className="empty-results"><h3>Your next step starts with a hunt.</h3><p>No completed hunts yet. Set your preferences and discover live openings.</p><Link href="/dashboard" className="primary-button">Start a hunt</Link></div></>;
-  const [listings, previous] = await Promise.all([getSearchListings(run.id,user.id), previousDedupeKeys(user.id,run.id)]);
+  const [listings, previous] = await Promise.all([getSearchListings(run.id, user.id), previousDedupeKeys(user.id, run.id)]);
   const old = new Set(previous);
-  const drops = Object.entries((run.preference_snapshot.hard_filter_drops ?? {}) as Record<string, number>).filter(([key]) => key !== 'role').map(([key, count]) => `${hardFilterLabels[key] ?? key} removed ${count}`);
-  return <><div className="page-heading"><h1>Your shortlist</h1><p>{listings.length} ranked openings · {run.cache_hit ? 'cached hunt' : 'live hunt'} · {new Date(run.created_at).toLocaleString()}</p></div>{!listings.length && <div className="empty-results"><h3>No matches in this current.</h3><p>{drops.length ? `After your hard filters: ${drops.join(', ')}. Nothing was widened. Loosen one and run again.` : 'Try broader preferences. Hidden listings are omitted from your shortlist.'}</p><Link className="secondary-button" href="/dashboard">Adjust your hunt</Link></div>}<div className="job-list">{listings.map(job => <article className="job-card persisted-card" key={job.id}><div className="company-avatar blue">{job.company.slice(0,2).toUpperCase()}</div><div className="job-main"><div className="job-company"><span>{job.company}</span><span className="source-tag">{job.source_name}</span>{previous.length>0 && !old.has(job.dedupe_key) && <span className="new-badge">New since last hunt</span>}</div><h3>{job.title}</h3><div className="job-meta"><span><MapPin size={14} />{job.location || 'Not stated'}</span><span>{job.seniority.replace('_',' ')}</span><span>{job.work_mode}</span></div><p className="job-snippet">{job.snippet}</p><div className="match-reasons">{job.match_reasons.map(reason => <span key={reason}><Check size={12} />{reason}</span>)}</div>{job.uncertainties?.length > 0 && <p className="field-hint">{job.uncertainties.join(' · ')}</p>}<div className="job-foot"><span>{job.visa_signal==='sponsors' ? 'Sponsorship mentioned' : job.visa_signal==='no_sponsor' ? 'No sponsorship' : 'Sponsorship not stated'}</span><span><Clock3 size={12} /> Read {new Date(job.fetched_at).toLocaleString()}</span><a href={job.source_url} target="_blank" rel="noreferrer">Source</a></div></div><div className="job-actions"><span className="match-pct" title={breakdown(job.facts)}>{Math.round(Number(job.score))}% match</span><a className="apply-button" href={job.apply_url} target="_blank" rel="noreferrer">Apply <ArrowUpRight size={15} /></a></div></article>)}</div><div className="run-footer">{run.search_count} searches · {run.fetch_count} fetches · {run.agent_count} Agent runs {run.cache_hit && '· cache replay, no new endpoint calls'}</div></>;
+  const drops = dropLines(run.preference_snapshot);
+  // The newest search found nothing, but an older one did: say so instead of showing a blank page.
+  const fellBack = !chosen && newest && newest.id !== run.id;
+  return <><div className="page-heading"><h1>{chosen ? searchTitle(run.preference_snapshot) : 'Your shortlist'}</h1><p>{listings.length} ranked openings · {searchSummary(run.preference_snapshot)} · {run.cache_hit ? 'cached hunt' : 'live hunt'} · {when(run.created_at)}</p></div>{tabs(chosen ? 'search' : 'latest')}
+    {fellBack && <p className="run-banner">Your latest search (“{searchTitle(newest.preference_snapshot)}”, {when(newest.created_at)}) found no matches{dropLines(newest.preference_snapshot).length ? `: ${dropLines(newest.preference_snapshot).join(', ')}` : ''}. Showing your last search that did. <Link href={`/dashboard?from=${newest.id}`}>Adjust that search</Link></p>}
+    {!listings.length && <div className="empty-results"><h3>No matches in this current.</h3><p>{drops.length ? `After your hard filters: ${drops.join(', ')}. Nothing was widened. Loosen one and run again.` : 'Try broader preferences. Hidden listings are omitted from your shortlist.'}</p><Link className="secondary-button" href={`/dashboard?from=${run.id}`}>Adjust your hunt</Link></div>}
+    <div className="job-list">{listings.map(job => <JobCard key={job.id} job={job} isNew={previous.length > 0 && !old.has(job.dedupe_key)} />)}</div>
+    <div className="run-footer">{run.search_count} searches · {run.fetch_count} fetches · {run.agent_count} Agent runs {run.cache_hit && '· cache replay, no new endpoint calls'}</div></>;
 }

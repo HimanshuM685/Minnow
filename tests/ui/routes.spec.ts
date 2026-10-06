@@ -60,6 +60,8 @@ test('signed-out admin redirects to the single sign-in page and returns to /admi
 test('credits and deep-search entry points require sign-in and come back', async ({ page }) => {
   await page.goto('/credits');
   await expect(page).toHaveURL(/\/auth\/sign-in\?next=%2Fcredits$/);
+  await page.goto('/dashboard/searches');
+  await expect(page).toHaveURL(/\/auth\/sign-in\?next=%2Fdashboard%2Fsearches$/);
   await page.goto('/dashboard?deep=1');
   await expect(page).toHaveURL(/\/auth\/sign-in\?next=%2Fdashboard$/);
 });
