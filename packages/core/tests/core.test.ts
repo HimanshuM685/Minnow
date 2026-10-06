@@ -153,8 +153,9 @@ test('Agent output is validated per item and sponsorship still requires evidence
 });
 
 test('extracted resume tokens boost fit and contribute a visible match reason', () => {
-  const base=matchListings([job()],prefs).listings[0];
-  const boosted=matchListings([job()],{ ...prefs,resumeKeywords:['python'] }).listings[0];
+  const unconfirmed=job({ location: 'Not stated' });
+  const base=matchListings([unconfirmed],{ ...prefs,location:'Bengaluru' }).listings[0];
+  const boosted=matchListings([unconfirmed],{ ...prefs,location:'Bengaluru',resumeKeywords:['python'] }).listings[0];
   assert.ok(boosted.match_score>base.match_score);
   assert.ok(boosted.match_reasons.includes('Resume skill: python'));
 });
@@ -256,4 +257,29 @@ test('shortlist matching: synonyms match, half-matched titles do not, and unconf
 test('queries stay short: a few keywords, profession only for one-word roles', () => {
   const [query] = buildQueries({ ...prefs, role: 'Product designer', profession: 'Design', keywords: 'figma, systems, research, motion, 3d', sources: ['careers'] });
   assert.ok(query.query.includes('figma systems research') && !query.query.includes('motion') && !query.query.includes('Design '));
+});
+
+test('match score is the percentage of what this user asked for, with a stored breakdown', () => {
+  const perfect = job({ seniority: 'unknown', location: 'London, United Kingdom', work_mode: 'hybrid', snippet: 'Build things.' });
+  const none = matchListings([perfect], withFilters({}, { role: 'Software Engineer Intern' })).listings[0];
+  assert.deepEqual(Object.keys(none.facts.breakdown!).sort(), ['quality', 'role'], 'unset dimensions are not scored');
+  const asked = withFilters({}, { role: 'Software Engineer Intern', location: 'London', country: 'GB', workMode: 'hybrid' });
+  const matched = matchListings([perfect], asked).listings[0];
+  assert.deepEqual(Object.keys(matched.facts.breakdown!).sort(), ['mode', 'place', 'quality', 'role']);
+  assert.equal(matched.facts.breakdown!.place.earned, 15, 'confirmed city earns full place points');
+  assert.ok(matched.match_score >= 90 && matched.match_score <= 100);
+  // Unknown earns half, an explicit conflict earns nothing.
+  const unknown = matchListings([job({ location: 'Not stated', work_mode: 'unknown', seniority: 'unknown' })], asked).listings[0];
+  assert.equal(unknown.facts.breakdown!.place.earned, 7.5); assert.equal(unknown.facts.breakdown!.mode.earned, 2.5);
+  assert.ok(unknown.match_score < matched.match_score);
+  const refused = matchListings([job({ seniority: 'unknown', visa_signal: 'no_sponsor' })], withFilters({ visa: 'needs_sponsorship' }, { role: 'Software Engineer Intern' })).listings[0];
+  const sponsored = matchListings([job({ seniority: 'unknown', visa_signal: 'sponsors' })], withFilters({ visa: 'needs_sponsorship' }, { role: 'Software Engineer Intern' })).listings[0];
+  assert.equal(refused.facts.breakdown!.prefs.earned, 0); assert.equal(sponsored.facts.breakdown!.prefs.earned, 5);
+  assert.ok(sponsored.match_score > refused.match_score);
+});
+
+test('Deep discovery keeps a wider candidate list than the normal limit', () => {
+  const hits = Array.from({ length: 20 }, (_, i) => ({ url: `https://job-boards.greenhouse.io/company${i}/jobs/${100 + i}`, title: `Software Engineer at C${i}`, snippet: '' }));
+  assert.equal(discover(hits, { ...prefs, sources: ['greenhouse'] }).length, 12);
+  assert.equal(discover(hits, { ...prefs, sources: ['greenhouse'] }, 24).length, 20);
 });

@@ -48,7 +48,7 @@ export default function Landing() {
         <div className="window-body">
           {[{ title: 'Software Engineer Intern', company: 'Example employer', location: 'Bengaluru, India', reason: 'Python matches your resume', fit: 92 }, { title: 'Graduate Product Designer', company: 'Sample design team', location: 'London, UK', reason: 'Design systems keyword', fit: 86 }, { title: 'Data Analyst', company: 'Demo company', location: 'Remote', reason: 'SQL matches your resume', fit: 81 }].map(job => <article className="sample-card" key={job.title}>
             <div><p>{job.company}</p><h3>{job.title}</h3><span><MapPin size={13} />{job.location}</span><small><Check size={12} />{job.reason}</small></div>
-            <b>{job.fit} fit</b>
+            <b>{job.fit}% match</b>
           </article>)}
         </div>
       </div>

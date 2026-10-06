@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { neonConfig } from '@neondatabase/serverless';
-import { forgetEnsuredProfiles, reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
-import { executeHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
+import { spendCredits, forgetEnsuredProfiles, reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
+import { executeHunt, prepareHunt, runHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
 import { getSearch } from '../src/index';
 import { migrations } from '../src/schema';
 
@@ -173,6 +173,38 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
       assert.equal(await balance('user-b'),11);
       assert.equal((await getSearch(stuck.id))?.status,'error');
       assert.equal(await hasRunningSearch('user-b'),false);
+      // Deep Search costs 2 atomically; a stale deep hunt refunds 2 exactly once; own key is free; deep is never cached.
+      assert.equal(await spendCredits('user-b',2),await balance('user-b'));
+      const before=await balance('user-b');
+      await addCredits('user-b',-(before-1));
+      assert.equal(await spendCredits('user-b',2),null,'insufficient balance changes nothing');
+      assert.equal(await balance('user-b'),1);
+      const deepStuck=await createSearch({userId:'user-b',preferenceSnapshot:{deep:true,credits_charged:2,hash:'deep-stuck'}});
+      await db.query(`UPDATE searches SET created_at=now()-interval '10 minutes' WHERE id=$1`,[deepStuck.id]);
+      assert.equal(await reconcileStaleSearches('user-b'),2);
+      assert.equal(await reconcileStaleSearches('user-b'),0);
+      assert.equal(await balance('user-b'),3);
+      for(const deep of [true,false]){
+        const row=await createSearch({userId:'user-b',preferenceSnapshot:{hash:`cache-${deep}`,deep}});
+        await insertListings([{userId:'user-b',searchId:row.id,dedupeKey:`https://x.example/jobs/${deep}`,title:'Engineer',company:'X',location:'London',seniority:'unknown',workMode:'hybrid',visaSignal:'unknown',snippet:'',applyUrl:`https://x.example/jobs/${deep}`,sourceUrl:'https://x.example',sourceName:'careers',score:80,matchReasons:[]}]);
+        await finishSearch(row.id,'done',null,{search:1,fetch:1,agent:0});
+        assert.equal((await findCachedSearch('user-b',`cache-${deep}`))===null,deep,deep?'deep searches are never replayed':'normal searches are');
+      }
+      // Deep end to end: prepare charges 2 and returns at once; run does the work and persists the deep snapshot.
+      await addCredits('user-a',5);
+      const deepBefore=await balance();
+      const deepForm={role:'Software Engineer',profession:'',location_label:'',location_country_code:'',work_mode:'any',keywords:[],filters:{}};
+      const prepared=await prepareHunt({id:'user-a',name:'Ada'},true,deepForm,true);
+      assert.equal(await balance(),deepBefore-2);
+      assert.equal((await getSearch(prepared.run.id))?.status,'running');
+      const deepEvents:HuntMessage[]=[];
+      await runHunt(prepared,new AbortController().signal,event=>deepEvents.push(event));
+      const deepRun=await getSearch(prepared.run.id);
+      assert.equal(deepRun?.status,'done');assert.equal(deepRun?.preference_snapshot.deep,true);assert.equal(deepRun?.preference_snapshot.credits_charged,2);
+      const deepListings=await getSearchListings(prepared.run.id,'user-a');
+      assert.ok(deepListings.length>0);
+      assert.ok(deepListings.every(row=>typeof (row.facts.breakdown as Record<string,unknown>|undefined)?.role==='object'),'every post carries its per-user score breakdown');
+      assert.equal(await balance(),deepBefore-2,'a deep hunt that found jobs stays charged');
       // Zero-listing searches are not cache hits.
       const empty=await createSearch({userId:'user-b',preferenceSnapshot:{hash:'empty-hash'}});
       await finishSearch(empty.id,'done',null,{search:1,fetch:0,agent:0});

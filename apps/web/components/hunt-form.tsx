@@ -1,12 +1,13 @@
 'use client';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, RefreshCw, LoaderCircle, Check, Sparkles } from 'lucide-react';
 import type { PreferenceRow, SearchRow } from '@minnow/db/types';
 import { readSSE } from '@minnow/core/sse';
 import { activeDrawerCount, normalizeFilters, type HuntFilters } from '@minnow/core/filters';
 import { PROFESSIONS, SKILLS } from '@/lib/suggestions';
+import { TELEGRAM_HANDLE, TELEGRAM_URL } from '@/lib/links';
 import { savePreferences } from '@/app/(dashboard)/dashboard/actions';
 // An error reported by the server (final), as opposed to a dropped connection (recoverable).
 class HuntFailed extends Error {}
@@ -34,7 +35,7 @@ function Chips({ label, values, onChange, list, placeholder }: { label: string; 
   return <div className="chip-field"><label>{label}<span className="skill-add"><input list={list} maxLength={80} placeholder={placeholder} value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} /><button type="button" className="secondary-button" onClick={add}>Add</button></span></label>
     {values.length > 0 && <div className="skill-tags">{values.map(item => <button type="button" className="chip" key={item} aria-label={`Remove ${item}`} onClick={() => onChange(values.filter(other => other !== item))}>{item} ×</button>)}</div>}</div>;
 }
-export function HuntForm({ initial, skills, latest, configured, credits }: { initial: PreferenceRow; skills: string[]; latest: SearchRow | null; configured: boolean; credits: number | null }) {
+export function HuntForm({ initial, skills, latest, configured, credits, deepDefault, activeRun }: { initial: PreferenceRow; skills: string[]; latest: SearchRow | null; configured: boolean; credits: number | null; deepDefault: boolean; activeRun: { id: string; deep: boolean } | null }) {
   const router = useRouter();
   const [value, setValue] = useState(initial);
   const [keywords, setKeywords] = useState(initial.keywords.join(', '));
@@ -44,7 +45,10 @@ export function HuntForm({ initial, skills, latest, configured, credits }: { ini
   const isRemote = /^\s*remote\s*$/i.test(value.location_label);
   const radiusEnabled = value.location_label.trim() !== '' && !isRemote;
   const clearAll = () => { setValue(initial); setKeywords(initial.keywords.join(', ')); setFilters(savedFilters); setError(''); setMessage('Filters reset to your saved preferences.'); };
+  const [deep, setDeep] = useState(deepDefault);
+  const DEEP_COST = 2;
   const outOfCredits = credits === 0;
+  const cantAffordDeep = credits !== null && credits < DEEP_COST;
   const drawerCount = activeDrawerCount(filters, value.profession);
   const addSkill = (skill: string) => setFilters(old => old.skills.some(item => item.toLowerCase() === skill.toLowerCase()) ? old : { ...old, skills: [...old.skills, skill] });
   const [message, setMessage] = useState('');
@@ -65,30 +69,49 @@ export function HuntForm({ initial, skills, latest, configured, credits }: { ini
     setCounts(next.counts); setStage('done');
     setMessage(next.found === 0 ? (next.dropped?.length ? `Nothing was left after your hard filters: ${next.dropped.map(item => `${item.filter} removed ${item.count}`).join(', ')}. Nothing was widened. Loosen one and run again. This hunt was not charged.` : 'No matching openings were found this time. This hunt was not charged. Try a broader role or location.') : 'Your shortlist is ready.');
   };
-  // The stream can drop (network, platform limit) while the hunt keeps running on the server: check its real status.
-  async function waitForHunt(searchId: string) {
-    setMessage('Connection interrupted. Checking your hunt…');
-    for (let i = 0; i < 100; i++) {
+  // Follows a hunt by id: used when the stream drops, for Deep Search (which runs in the background), and when a
+  // returning user already has a hunt running.
+  async function waitForHunt(searchId: string, intro = 'Connection interrupted. Checking your hunt…') {
+    setMessage(intro);
+    for (let i = 0; i < 200; i++) {
       await new Promise(resolve => setTimeout(resolve, 3000));
       try {
         const response = await fetch(`/api/hunt?id=${searchId}`, { cache: 'no-store' });
         if (response.status === 401) throw new Error('Your session expired. Sign in again.');
         if (!response.ok) continue;
-        const run = await response.json() as { status: string; error?: string; found: number; counts: NonNullable<typeof counts> };
+        const run = await response.json() as { status: string; error?: string; found: number; progress?: string; counts: NonNullable<typeof counts> };
         if (run.status === 'done') { finish({ counts: run.counts, found: run.found }); return; }
         if (run.status === 'error') throw new HuntFailed(run.error ?? 'The hunt could not finish.');
+        if (run.progress) setMessage(run.progress);
       } catch (e) { if (e instanceof HuntFailed || (e instanceof Error && e.message.startsWith('Your session'))) throw e; }
     }
     throw new Error('The hunt is still running. Check your Shortlist in a minute; you will not be charged twice.');
   }
+  // Resume following a hunt that is already running (another tab, or a Deep Search started earlier).
+  useEffect(() => {
+    if (!activeRun) return;
+    let cancelled = false;
+    setBusy(true); setStage('search');
+    waitForHunt(activeRun.id, activeRun.deep ? 'Deep Search is running on our servers. You can leave this page.' : 'A hunt is in progress…')
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Hunt failed.'); })
+      .finally(() => { if (!cancelled) { setBusy(false); router.refresh(); } });
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   async function run(refresh: boolean) {
     setBusy(true); setError(''); setCounts(null); setStage('search'); setMessage('Searching live careers pages…');
     let searchId = '';
     try {
       let response: Response;
-      try { response = await fetch('/api/hunt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh, form: prefs() }) }); }
+      try { response = await fetch('/api/hunt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh, form: prefs(), deep }) }); }
       catch { throw new Error('Could not reach Minnow. Check your connection and try again. Nothing was charged.'); }
       if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new Error(body.error ?? `The server returned ${response.status}. Please try again.`); }
+      if (deep) {
+        // Deep Search answers immediately and keeps working on the server, so the user may leave this page.
+        const started = await response.json() as { searchId: string };
+        router.refresh(); // the 2 credits are already spent
+        await waitForHunt(started.searchId, 'Deep Search is running on our servers. You can leave this page; your shortlist will be waiting.');
+        return;
+      }
       if (!response.body) throw new Error('No progress stream received.');
       let done = false;
       try {
@@ -182,10 +205,15 @@ export function HuntForm({ initial, skills, latest, configured, credits }: { ini
             <datalist id="profession-options">{PROFESSIONS.map(item => <option key={item} value={item} />)}</datalist>
             <datalist id="skill-options">{[...new Set([...skills, ...SKILLS])].map(item => <option key={item} value={item} />)}</datalist>
             <p className="field-hint">Hard filters remove listings. Skills, salary, visa and company filters only change the ranking. Unknown stays unknown.</p>
+            <div className="deep-toggle">
+              <label className="deep-label"><input type="checkbox" checked={deep} onChange={e => setDeep(e.target.checked)} />Deep Search</label>
+              <p className="field-hint">{credits === null ? 'Free with your own key.' : `${DEEP_COST} credits per run.`} Reads more pages, uses more agents and opens job details for an accurate match score. Runs in the background on our servers, so you can leave this page.</p>
+              {deep && cantAffordDeep && <p className="field-hint">You need {DEEP_COST} credits. <Link href="/credits">Get more</Link>.</p>}
+            </div>
             <div className="form-buttons">
               <button type="button" className="secondary-button" onClick={() => void save()}>Save preferences</button>
               <button type="button" className="secondary-button" onClick={clearAll}>Clear all</button>
-              <button className="primary-button" disabled={!configured || outOfCredits || value.role.trim().length < 2}><Search size={16} />Run hunt</button>
+              <button className="primary-button" disabled={!configured || outOfCredits || (deep && cantAffordDeep) || value.role.trim().length < 2}><Search size={16} />{deep ? 'Run Deep Search' : 'Run hunt'}</button>
             </div>
             {value.role.trim().length < 2 && (
               <p className="field-hint">
@@ -210,7 +238,7 @@ export function HuntForm({ initial, skills, latest, configured, credits }: { ini
           {message && <div className="hunt-progress" role="status">{busy ? <LoaderCircle size={17} className="spin" /> : <Check size={17} />}<span>{message}</span></div>}
           {busy && <div className="hunt-step-line">{['search','fetch','agent','rank'].map(step => <span className={stage === step ? 'current' : ''} key={step}>{step === 'search' ? 'Searching' : step === 'fetch' ? 'Fetching' : step === 'agent' ? 'Agent if needed' : 'Ranking'}</span>)}</div>}
           {error && <p className="form-error" role="alert">{error}</p>}
-          {outOfCredits && <p className="connection-note" role="alert">You’re out of credits. <a href="https://t.me/HimanshuM685" target="_blank" rel="noopener noreferrer">Message @HimanshuM685 on Telegram</a> for more, or <Link href="/credits">add your own TinyFish key</Link>.</p>}
+          {outOfCredits && <p className="connection-note" role="alert">You’re out of credits. <a href={TELEGRAM_URL} target="_blank" rel="noopener noreferrer">Message @{TELEGRAM_HANDLE} on Telegram</a> for more, or <Link href="/credits">add your own TinyFish key</Link>.</p>}
           {credits !== null && credits > 0 && <p className="field-hint">{credits} credit{credits === 1 ? '' : 's'} left · <Link href="/credits">Credits</Link></p>}
           {!configured && <p className="connection-note">Set TINYFISH_API_KEY in apps/web/.env.local to run a live hunt.</p>}
           {counts && (

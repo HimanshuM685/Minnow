@@ -57,6 +57,13 @@ test('signed-out admin redirects to the single sign-in page and returns to /admi
   await expect(page.locator('.observatory-shell')).toHaveCount(0);
 });
 
+test('credits and deep-search entry points require sign-in and come back', async ({ page }) => {
+  await page.goto('/credits');
+  await expect(page).toHaveURL(/\/auth\/sign-in\?next=%2Fcredits$/);
+  await page.goto('/dashboard?deep=1');
+  await expect(page).toHaveURL(/\/auth\/sign-in\?next=%2Fdashboard$/);
+});
+
 test('sign-up route is the same page and open redirects are ignored', async ({page}) => {
   await page.goto('/auth/sign-up');
   await expect(page).toHaveURL(/\/auth\/sign-in$/);

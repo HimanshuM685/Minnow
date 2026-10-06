@@ -40,6 +40,8 @@ export const listingFactsSchema = z.object({
   company_size: z.enum(['startup_1_10', '11_50', '51_200', '201_1000', 'enterprise']).optional(),
   company_stage: z.enum(['pre_seed', 'seed', 'series_a', 'series_b', 'growth', 'public']).optional(),
   language: z.string().optional(), skills_found: z.array(z.string()).optional(),
+  // Per-user score parts written by matchListings: earned / possible points per dimension the user set.
+  breakdown: z.record(z.object({ earned: z.number(), possible: z.number() })).optional(),
 });
 export type ListingFacts = z.infer<typeof listingFactsSchema>;
 

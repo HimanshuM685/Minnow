@@ -10,7 +10,7 @@ export function emptyStats(): RunStats {
 export async function runSearch(
   prefs: Preferences, runId: string, key: string, signal: AbortSignal,
   emit: (event: SearchEvent) => void,
-  config: { maxAgentRuns: number; agentDuration: number; budgetMs?: number; skippedHosts?: string[]; stats?: RunStats },
+  config: { maxAgentRuns: number; agentDuration: number; budgetMs?: number; deep?: boolean; skippedHosts?: string[]; stats?: RunStats },
 ): Promise<SearchResult> {
   const started = Date.now();
   const stats = config.stats ?? emptyStats();
@@ -22,6 +22,7 @@ export async function runSearch(
   const raw: Listing[] = [];
   const stale = new Set<string>();
   const stubborn = new Map<string, { url: string; priority: number }>();
+  const emptyIndexes = new Map<string, { url: string; priority: number }>();
   const report = (item: SourceReport) => { reports.push(item); emit({ type: 'source', report: item }); };
   const progress = (stage: 'search' | 'fetch' | 'agent' | 'rank', message: string) => emit({ type: 'progress', stage, message });
   const partial = () => emit({ type: 'partial', listings: matchListings(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs).listings.slice(0, 60) });
@@ -48,8 +49,8 @@ export async function runSearch(
   if (authError) throw authError;
   signal.throwIfAborted();
   if (!successes && !prefs.careersUrls.length) throw lastError && [402, 403, 429].includes(lastError.status) ? lastError : new TinyFishError('No search source completed. Check the source activity below and retry.');
-  const discovered = discover(hits, prefs);
-  const candidates = discovered.filter(item => !(config.skippedHosts ?? []).some(host => new URL(item.url).hostname === host || new URL(item.url).hostname.endsWith(`.${host}`))).slice(0, 10);
+  const discovered = discover(hits, prefs, config.deep ? 24 : 12);
+  const candidates = discovered.filter(item => !(config.skippedHosts ?? []).some(host => new URL(item.url).hostname === host || new URL(item.url).hostname.endsWith(`.${host}`))).slice(0, config.deep ? 24 : 10);
   for (const candidate of discovered) if (!candidates.includes(candidate)) {
     report({ url: candidate.url,name: new URL(candidate.url).hostname,stage: 'fetch',status: 'skipped',message: (config.skippedHosts ?? []).some(host=>new URL(candidate.url).hostname===host||new URL(candidate.url).hostname.endsWith(`.${host}`)) ? 'Host skipped by Observatory' : 'Fetch page budget reached',count: 0 });
   }
@@ -74,6 +75,7 @@ export async function runSearch(
       raw.push(...parsed.listings);
       if (parsed.closed) stale.add(canonicalUrl(page.url));
       if (parsed.thin) stubborn.set(canonicalUrl(page.url), { url: page.url, priority: 20 });
+      else if (!parsed.closed && !parsed.listings.length) emptyIndexes.set(canonicalUrl(page.url), { url: page.url, priority: 10 });
       report({ url: page.url, name: new URL(page.url).hostname, stage: 'fetch', status: parsed.listings.length ? 'ok' : 'empty', message: parsed.closed ? 'Closed posting excluded' : parsed.listings.length ? `${parsed.listings.length} ${parsed.listings.length === 1 ? 'opening' : 'openings'} extracted${parsed.listings[0]?.verification === 'board' ? '; board links only, individual details not inspected' : ''}` : parsed.thin ? 'No readable listings; eligible for Agent scanning' : 'No current openings on this page', count: parsed.listings.length });
     }
     for (const failure of response.errors) {
@@ -96,14 +98,19 @@ export async function runSearch(
     progress('fetch', `Reading ${candidates.length} live job and careers pages…`);
     // Small parallel batches keep one slow page from holding the whole read.
     const urls = candidates.map(item => item.url);
-    const size = Math.ceil(urls.length / 3);
-    await Promise.all([urls.slice(0, size), urls.slice(size, size * 2), urls.slice(size * 2)].filter(batch => batch.length).map(readBatch));
+    // Fetch accepts at most 10 URLs per call; deep reads up to 3 calls of 8.
+    const size = config.deep ? 8 : Math.ceil(urls.length / 3);
+    const batches: string[][] = [];
+    for (let i = 0; i < urls.length; i += size) batches.push(urls.slice(i, i + size));
+    await Promise.all(batches.map(readBatch));
   }
 
   // Agent scans are the slowest step: only run them when plain Fetch found too little.
-  const enough = matchListings(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs).listings.length >= ENOUGH_LISTINGS;
+  const enough = !config.deep && matchListings(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs).listings.length >= ENOUGH_LISTINGS;
   if (enough && stubborn.size) progress('rank', `Found enough matching openings (${ENOUGH_LISTINGS}+); skipping slower Agent scans.`);
   const scanLimit = prefs.useAgent && !enough ? config.maxAgentRuns : 0;
+  // Deep: boards that parsed nothing are agent targets too (after blocked/JS-only pages, which keep higher priority).
+  if (config.deep) for (const page of emptyIndexes.values()) if (!stubborn.has(canonicalUrl(page.url))) stubborn.set(canonicalUrl(page.url), page);
   const distinctBoards = new Map<string, { url: string; priority: number }>();
   for (const page of [...stubborn.values()].sort((a, b) => b.priority - a.priority)) {
     if (!distinctBoards.has(companyKey(page.url))) distinctBoards.set(companyKey(page.url), page);
@@ -135,6 +142,35 @@ export async function runSearch(
   for (const candidate of stubborn.values()) {
     if (agentCompanies.has(companyKey(candidate.url))) continue;
     report({ url: candidate.url, name: new URL(candidate.url).hostname, stage: 'agent', status: 'skipped', message: enough ? 'Skipped: enough openings already found' : !scanLimit ? 'Agent scanning is disabled' : scans.length ? 'Agent run cap reached' : 'Not enough time left for an Agent scan', count: 0 });
+  }
+  // Deep only: open the detail page of the best board-only listings so location, level, pay and dates are known
+  // and the match score reflects the real posting instead of a link title.
+  if (config.deep && (config.budgetMs ?? 200_000) - (Date.now() - started) > 25_000) {
+    const seenUrls = new Set(candidates.map(item => canonicalUrl(item.url)));
+    const boards = matchListings(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs).listings
+      .filter(job => job.verification === 'board' && publicUrl(job.apply_url) && !seenUrls.has(canonicalUrl(job.apply_url))).slice(0, 16);
+    if (boards.length) {
+      progress('fetch', `Opening ${boards.length} job details to confirm location, level and pay…`);
+      const urls = [...new Set(boards.map(job => job.apply_url))];
+      const batches: string[][] = [];
+      for (let i = 0; i < urls.length; i += 8) batches.push(urls.slice(i, i + 8));
+      await Promise.all(batches.map(async batch => {
+        try {
+          const response = await client.fetchPages(batch, prefs);
+          for (const page of response.results) {
+            if (!publicUrl(page.url)) continue;
+            const parsed = extractPage(page, prefs);
+            if (parsed.closed) stale.add(canonicalUrl(page.url));
+            raw.push(...parsed.listings.filter(job => job.verification === 'detail'));
+          }
+          for (const failure of response.errors) if (['page_not_found', 'login_required'].includes(failure.error) || [404, 410].includes(failure.status ?? 0)) stale.add(canonicalUrl(failure.url));
+        } catch (error) {
+          signal.throwIfAborted();
+          if (error instanceof TinyFishError && error.status === 401) throw error;
+          for (const url of batch) report({ url, name: new URL(url).hostname, stage: 'fetch', status: 'error', message: 'Job details could not be opened; the board listing is kept.', count: 0 });
+        }
+      }));
+    }
   }
   signal.throwIfAborted();
   if (candidates.length && stats.fetchedPages===0 && !reports.some(item=>item.stage==='agent' && ['ok','empty'].includes(item.status))) {

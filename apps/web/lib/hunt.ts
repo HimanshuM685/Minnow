@@ -1,24 +1,32 @@
 import { createHash } from 'node:crypto';
 import { canonicalUrl, hardFilterLabels, normalizeFilters, type SearchEvent } from '@minnow/core';
-import { addSearchEvents, updateSourceHealth, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getResume, getWallet, hasRunningSearch, insertListings, patchSearchSnapshot, reconcileStaleSearches, spendCredit, addCredits, skippedHosts } from '@minnow/db';
+import { addSearchEvents, updateSourceHealth, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getResume, getWallet, hasRunningSearch, insertListings, patchSearchSnapshot, reconcileStaleSearches, spendCredits, addCredits, DEEP_SEARCH_COST, skippedHosts } from '@minnow/db';
 import { emptyStats, runSearch } from './pipeline';
 import { resumeSkills } from './resume';
 import { huntInputSchema, toPreferences, toRow, type HuntInput } from './hunt-input';
 
 export class HuntInputError extends Error {}
+export class HuntCreditError extends HuntInputError {}
+export class HuntBusyError extends HuntInputError {}
 // Soft deadline for discovery. Must leave room inside the route's maxDuration for ranking and persistence.
 export const HUNT_BUDGET_MS=150_000;
+export const DEEP_BUDGET_MS=240_000;
 export type HuntMessage = { type: 'started'; searchId: string } | { type: 'progress'; stage: string; message: string } | { type: 'complete'; found?: number; dropped?: { filter: string; count: number }[]; searchId: string; counts: {search:number;fetch:number;agent:number}; cacheHit: boolean };
 const limit = (value: string|undefined, fallback: number,min: number,max:number) => {
   const parsed=Number(value);return value && Number.isFinite(parsed) ? Math.floor(Math.min(max,Math.max(min,parsed))) : fallback;
 };
 
 // Web-only server orchestration. Durable writes are awaited before completion is emitted.
+// prepareHunt validates, charges and creates the search row; runHunt does the (possibly long) work.
+export type PreparedHunt={user:{id:string;name:string};input:HuntInput;skills:string[];run:{id:string};cached:{id:string}|null;cost:number;ownKey:string|null;excludedHosts:string[];deep:boolean};
 export async function executeHunt(user: { id:string;name:string }, refresh:boolean, signal:AbortSignal, send:(event:HuntMessage)=>void, form?:unknown) {
+  await runHunt(await prepareHunt(user,refresh,form,false),signal,send);
+}
+export async function prepareHunt(user: { id:string;name:string }, refresh:boolean, form:unknown, deep:boolean):Promise<PreparedHunt> {
   await ensureProfile(user.id,user.name);
   // Independent reads run together: one round trip of latency instead of six.
   const [,running,saved,resume,excludedHosts,wallet]=await Promise.all([reconcileStaleSearches(user.id),hasRunningSearch(user.id),getPreferences(user.id),getResume(user.id),skippedHosts(),getWallet(user.id)]);
-  if(running) throw new HuntInputError('A hunt is already running for your account. Wait for it to finish, then try again.');
+  if(running) throw new HuntBusyError('A hunt is already running for your account. Wait for it to finish, then try again.');
   // The form wins even when unsaved; the saved row is the fallback (e.g. a plain refresh).
   const candidate=form ?? (saved ? {...saved,filters:normalizeFilters(saved.filters)} : null);
   if(!candidate) throw new HuntInputError('Enter a role before running a hunt.');
@@ -29,17 +37,23 @@ export async function executeHunt(user: { id:string;name:string }, refresh:boole
   const prefs=toRow(input);
   const hash=createHash('sha256').update(JSON.stringify({...prefs,resume:resume?.uploaded_at??null,excludedHosts:excludedHosts.sort()})).digest('hex');
   const snapshot={...prefs,hash,resume_skills:skills};
-  const cached=refresh ? null : await findCachedSearch(user.id,hash);
+  // Deep Search always does fresh work, so it is never replayed from cache.
+  const cached=refresh||deep ? null : await findCachedSearch(user.id,hash);
   // A saved personal TinyFish key runs unmetered; otherwise a live (non-cached) hunt costs one credit.
   const ownKey=wallet?.tinyfish_key?.trim()||null;
-  const charged=!cached && !ownKey;
-  if(charged && await spendCredit(user.id)===null) throw new HuntInputError('You are out of credits. Message @HimanshuM685 on Telegram for more, or add your own TinyFish API key on the Credits page.');
+  const cost=cached||ownKey ? 0 : deep ? DEEP_SEARCH_COST : 1;
+  if(cost && await spendCredits(user.id,cost)===null) throw new HuntCreditError((deep?`Deep Search costs ${DEEP_SEARCH_COST} credits and you have fewer. `:'You are out of credits. ')+'Message @HimanshuM685 on Telegram for more, or add your own TinyFish API key on the Credits page.');
+  let run;
+  try{ run=await createSearch({userId:user.id,preferenceSnapshot:{...snapshot,deep,credits_charged:cost},cacheHit:Boolean(cached)}); }
+  catch(error){ if(cost) await addCredits(user.id,cost); throw error; }
+  return {user,input,skills,run,cached,cost,ownKey,excludedHosts,deep};
+}
+
+export async function runHunt(prepared:PreparedHunt, signal:AbortSignal, send:(event:HuntMessage)=>void) {
+  const {user,input,skills,run,cached,cost,ownKey,excludedHosts,deep}=prepared;
   // Refund at most once, whichever path ends a charged hunt without usable results.
   let refunded=false;
-  const refund=async()=>{ if(charged && !refunded){ refunded=true; await addCredits(user.id,1); } };
-  let run;
-  try{ run=await createSearch({userId:user.id,preferenceSnapshot:{...snapshot,charged},cacheHit:Boolean(cached)}); }
-  catch(error){ await refund(); throw error; }
+  const refund=async()=>{ if(cost && !refunded){ refunded=true; await addCredits(user.id,cost); } };
   const stats=emptyStats();
   const controller=new AbortController();
   const workSignal=AbortSignal.any([signal,controller.signal]);
@@ -72,11 +86,11 @@ export async function executeHunt(user: { id:string;name:string }, refresh:boole
       send({type:'complete',searchId:run.id,counts,cacheHit:true});
       return;
     }
-    trace('search',null,null,true,'Hunt started with saved preferences and extracted resume skill hints.');
+    trace('search',null,null,true,deep?'Deep Search started: wider discovery, job-detail enrichment and up to 5 agents.':'Hunt started with saved preferences and extracted resume skill hints.');
     const apiKey=ownKey??process.env.TINYFISH_API_KEY?.trim();
     if(!apiKey) throw new Error('Search is not configured: add your own TinyFish key on the Credits page.');
     const preferences=toPreferences(input,skills);
-    const result=await runSearch(preferences,run.id,apiKey,workSignal,emit,{maxAgentRuns:limit(process.env.MAX_AGENT_RUNS,2,0,2),agentDuration:limit(process.env.AGENT_DURATION_SECONDS,60,30,120),budgetMs:HUNT_BUDGET_MS,skippedHosts:excludedHosts,stats});
+    const result=await runSearch(preferences,run.id,apiKey,workSignal,emit,{maxAgentRuns:deep?5:limit(process.env.MAX_AGENT_RUNS,2,0,2),agentDuration:deep?90:limit(process.env.AGENT_DURATION_SECONDS,60,30,120),budgetMs:deep?DEEP_BUDGET_MS:HUNT_BUDGET_MS,deep,skippedHosts:excludedHosts,stats});
     await writes;
     if(writeError) throw writeError;
     workSignal.throwIfAborted();

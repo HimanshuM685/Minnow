@@ -153,50 +153,68 @@ export function matchListings(listings: Listing[], prefs: Preferences): { listin
     const reasons = [fit === 1 ? 'Role matches' : 'Related role'];
     const uncertainties: string[] = [];
     if (radiusNote) uncertainties.push(radiusNote);
-    let score = fit * 45 + (job.verification === 'detail' ? 8 : 0) + (job.source_name !== 'portal' ? 5 : 0);
-    if (place === 'match') { score += 15; reasons.push(job.location); }
-    // Unconfirmed listings stay, but rank below confirmed ones when the user named a place.
-    if (place === 'unknown') { if (prefs.location || prefs.country) score -= 8; uncertainties.push(job.work_mode === 'remote' ? 'Check remote location eligibility' : 'Location not confirmed'); }
-    if (experience === 'match') { score += 10; reasons.push('Experience matches'); }
-    if (experience === 'unknown') uncertainties.push('Experience not stated');
-    if (prefs.workMode !== 'any' && job.work_mode === prefs.workMode) { score += 5; reasons.push(label(prefs.workMode === 'onsite' ? 'on-site' : prefs.workMode)); }
-    if (prefs.workMode !== 'any' && job.work_mode === 'unknown') { score -= 3; uncertainties.push('Work mode not stated'); }
-    if (filters.employmentType !== 'any') {
-      if (employment === filters.employmentType) { score += 4; reasons.push(label(employment)); } else if (!employment) uncertainties.push('Employment type not stated');
+    // The score is the share of what THIS user asked for that the post satisfies. Dimensions the user left unset
+    // are excluded; unknown page data earns half; an explicit conflict earns nothing.
+    const parts: Record<string, [number, number]> = {};
+    const part = (name: string, earned: number, possible: number) => { parts[name] = [Math.round(earned * 10) / 10, possible]; };
+    part('role', 40 * fit, 40);
+    if (prefs.location || prefs.country) {
+      part('place', place === 'match' ? 15 : 7.5, 15);
+      if (place === 'match') reasons.push(job.location);
+      if (place === 'unknown') uncertainties.push(job.work_mode === 'remote' ? 'Check remote location eligibility' : 'Location not confirmed');
     }
-    if (filters.postedWithin !== 'any') {
-      if (!Number.isNaN(postedMs)) { score += 4; reasons.push(`Posted within ${{ '24h': '24 hours', '3d': '3 days', '7d': 'this week', '30d': '30 days' }[filters.postedWithin]}`); } else uncertainties.push('Posting date not stated');
+    if (experience !== 'any') {
+      part('experience', experience === 'match' ? 10 : 5, 10);
+      if (experience === 'match') reasons.push('Experience matches'); else uncertainties.push('Experience not stated');
     }
+    if (prefs.workMode !== 'any') {
+      part('mode', job.work_mode === prefs.workMode ? 5 : 2.5, 5);
+      if (job.work_mode === prefs.workMode) reasons.push(label(prefs.workMode === 'onsite' ? 'on-site' : prefs.workMode)); else uncertainties.push('Work mode not stated');
+    }
+    // Skills: filter skills, keywords and resume skills, averaged over the ones that apply.
     const keywords = prefs.keywords.split(/[,;\n]/).map(normalize).filter(Boolean);
     const haystack = normalize(`${job.title} ${job.snippet}`);
     const hits = keywords.filter(keyword => ` ${haystack} `.includes(` ${keyword} `));
-    if (hits.length) { score += Math.min(12, hits.length * 4); reasons.push(...hits.slice(0, 2).map(keyword => `Mentions ${keyword}`)); }
     const resumeHits = prefs.resumeKeywords.map(normalize).filter(keyword => ` ${haystack} `.includes(` ${keyword} `));
-    if (resumeHits.length) { score += Math.min(10, resumeHits.length * 2); reasons.push(`Resume skill: ${resumeHits[0]}`); }
-    if (skills.length) {
-      const found = (job.facts.skills_found ?? []).filter(skill => skills.includes(skill));
-      if (found.length) { score += filters.skillMode === 'all' ? Math.round(14 * found.length / skills.length) : Math.min(12, found.length * 4); reasons.push(`Skill: ${found.slice(0, 2).join(', ')}`); }
-      if (filters.skillMode === 'all' && found.length < skills.length) { score -= 4; uncertainties.push(`Missing skills: ${skills.filter(skill => !found.includes(skill)).slice(0, 3).join(', ')}`); }
-      if (!found.length) uncertainties.push('No listed skill found');
+    const found = skills.length ? (job.facts.skills_found ?? []).filter(skill => skills.includes(skill)) : [];
+    // Resume skills are a bonus on top of the score, never a requirement the post can fail.
+    if (skills.length || keywords.length) {
+      const ratios: number[] = [];
+      if (skills.length) ratios.push(filters.skillMode === 'all' ? found.length / skills.length : found.length ? Math.min(1, 0.5 + 0.5 * found.length / skills.length) : 0);
+      if (keywords.length) ratios.push(hits.length / keywords.length);
+      const unread = job.verification === 'board' && !job.snippet;
+      part('skills', unread ? 7.5 : 15 * (ratios.reduce((sum, value) => sum + value, 0) / ratios.length), 15);
     }
-    // Visa: soft rank only. Unknown stays unknown.
+    if (found.length) reasons.push(`Skill: ${found.slice(0, 2).join(', ')}`);
+    if (skills.length && filters.skillMode === 'all' && found.length < skills.length) uncertainties.push(`Missing skills: ${skills.filter(skill => !found.includes(skill)).slice(0, 3).join(', ')}`);
+    if (skills.length && !found.length) uncertainties.push('No listed skill found');
+    if (hits.length) reasons.push(...hits.slice(0, 2).map(keyword => `Mentions ${keyword}`));
+    if (resumeHits.length) reasons.push(`Resume skill: ${resumeHits[0]}`);
+    // Everything else the user can set: 1 = satisfied, 0.5 = not stated, 0 = conflict.
+    const checks: number[] = [];
+    if (filters.employmentType !== 'any') {
+      if (employment === filters.employmentType) { checks.push(1); reasons.push(label(employment)); } else { checks.push(0.5); uncertainties.push('Employment type not stated'); }
+    }
+    if (filters.postedWithin !== 'any') {
+      if (!Number.isNaN(postedMs)) { checks.push(1); reasons.push(`Posted within ${{ '24h': '24 hours', '3d': '3 days', '7d': 'this week', '30d': '30 days' }[filters.postedWithin]}`); } else { checks.push(0.5); uncertainties.push('Posting date not stated'); }
+    }
     if (filters.visa === 'needs_sponsorship' || prefs.visa !== 'any') {
-      if (job.visa_signal === 'sponsors') { score += 10; reasons.push('Sponsorship mentioned'); }
-      else if (job.visa_signal === 'no_sponsor') { score -= 25; uncertainties.push('Posting explicitly does not offer sponsorship'); }
-      else { score -= 10; uncertainties.push('Visa not stated'); }
-    } else if (filters.visa === 'no_sponsorship_needed' && job.visa_signal === 'no_sponsor') uncertainties.push('Posting does not offer sponsorship (you do not need it)');
-    else if (filters.visa === 'relocation_ok') { if (job.facts.benefits?.includes('relocation')) { score += 5; reasons.push('Relocation offered'); } else uncertainties.push('Relocation not stated'); }
-    else if (filters.visa === 'open_globally') { if (job.work_mode === 'remote' && /\b(worldwide|anywhere|global)\b/i.test(job.location)) { score += 5; reasons.push('Open globally'); } else uncertainties.push('Global eligibility not stated'); }
+      if (job.visa_signal === 'sponsors') { checks.push(1); reasons.push('Sponsorship mentioned'); }
+      else if (job.visa_signal === 'no_sponsor') { checks.push(0); uncertainties.push('Posting explicitly does not offer sponsorship'); }
+      else { checks.push(0.5); uncertainties.push('Visa not stated'); }
+    } else if (filters.visa === 'no_sponsorship_needed') checks.push(1);
+    else if (filters.visa === 'relocation_ok') { if (job.facts.benefits?.includes('relocation')) { checks.push(1); reasons.push('Relocation offered'); } else { checks.push(0.5); uncertainties.push('Relocation not stated'); } }
+    else if (filters.visa === 'open_globally') { if (job.work_mode === 'remote' && /\b(worldwide|anywhere|global)\b/i.test(job.location)) { checks.push(1); reasons.push('Open globally'); } else { checks.push(0.5); uncertainties.push('Global eligibility not stated'); } }
     const wanted = filters.salary;
     if (wanted.min !== null || wanted.max !== null) {
       const pay = job.facts.salary;
-      if (!pay) uncertainties.push('Salary not stated');
-      else if (pay.currency !== wanted.currency) { score -= 2; uncertainties.push('Currency differs'); }
+      if (!pay) { checks.push(0.5); uncertainties.push('Salary not stated'); }
+      else if (pay.currency !== wanted.currency) { checks.push(0.5); uncertainties.push('Currency differs'); }
       else {
         const annual = (value: number, period: keyof typeof salaryYear) => value * salaryYear[period];
         const [lo, hi] = [annual(pay.min, pay.period), annual(pay.max, pay.period)];
         const [wantLo, wantHi] = [wanted.min === null ? 0 : annual(wanted.min, wanted.period), wanted.max === null ? Infinity : annual(wanted.max, wanted.period)];
-        if (hi >= wantLo && lo <= wantHi) { score += 6; reasons.push('Salary overlaps your range'); } else { score -= 6; uncertainties.push(hi < wantLo ? 'Salary below your range' : 'Salary above your range'); }
+        if (hi >= wantLo && lo <= wantHi) { checks.push(1); reasons.push('Salary overlaps your range'); } else { checks.push(0); uncertainties.push(hi < wantLo ? 'Salary below your range' : 'Salary above your range'); }
       }
     }
     const soft: [string, string | undefined, string][] = [
@@ -205,19 +223,27 @@ export function matchListings(listings: Listing[], prefs: Preferences): { listin
     ];
     for (const [wantedValue, actual, name] of soft) {
       if (wantedValue === 'any') continue;
-      if (actual === wantedValue) { score += 3; reasons.push(`${name}: ${label(wantedValue)}`); } else if (!actual) uncertainties.push(`${name} not stated`);
+      if (actual === wantedValue) { checks.push(1); reasons.push(`${name}: ${label(wantedValue)}`); } else if (!actual) { checks.push(0.5); uncertainties.push(`${name} not stated`); } else checks.push(0);
     }
     for (const benefit of filters.benefits) {
       const stated = benefit === 'visa_support' ? job.visa_signal === 'sponsors' : job.facts.benefits?.includes(benefit);
-      if (stated) { score += 2; reasons.push(`Benefit: ${label(benefit)}`); }
+      checks.push(stated ? 1 : 0.5); if (stated) reasons.push(`Benefit: ${label(benefit)}`);
     }
     if (filters.language !== 'any') {
-      if (job.facts.language === filters.language) { score += 2; reasons.push(`Language: ${filters.language}`); } else if (!job.facts.language) uncertainties.push('Posting language not detected');
+      if (job.facts.language === filters.language) { checks.push(1); reasons.push(`Language: ${filters.language}`); } else if (!job.facts.language) { checks.push(0.5); uncertainties.push('Posting language not detected'); } else checks.push(0);
     }
-    if (filters.companiesInclude.some(name => company.includes(normalize(name)))) { score += 5; reasons.push(`Company: ${job.company}`); }
-    if (job.verification === 'board') { score -= 6; uncertainties.push('Found on a live board; details not inspected'); }
-    if (job.posted_at && now - postedMs < 14 * 86400_000) score += 2;
-    ranked.push({ ...job, match_score: Math.min(100, Math.max(1, Math.round(score))), match_reasons: [...new Set(reasons)].slice(0, 8), uncertainties });
+    if (filters.companiesInclude.length) {
+      const listed = filters.companiesInclude.some(name => company.includes(normalize(name)));
+      checks.push(listed ? 1 : 0); if (listed) reasons.push(`Company: ${job.company}`);
+    }
+    if (checks.length) part('prefs', 5 * (checks.reduce((sum, value) => sum + value, 0) / checks.length), 5);
+    part('quality', (job.verification === 'detail' ? 5 : 0) + (job.source_name !== 'portal' ? 3 : 0) + (job.posted_at && now - postedMs < 14 * 86400_000 ? 2 : 0), 10);
+    if (job.verification === 'board') uncertainties.push('Found on a live board; details not inspected');
+    const resumeBonus = Math.min(4, resumeHits.length * 2);
+    const earned = Object.values(parts).reduce((sum, [value]) => sum + value, 0) + resumeBonus;
+    const possible = Object.values(parts).reduce((sum, [, max]) => sum + max, 0);
+    const breakdown = Object.fromEntries(Object.entries(parts).map(([name, [value, max]]) => [name, { earned: value, possible: max }]));
+    ranked.push({ ...job, match_score: Math.min(100, Math.max(1, Math.round(100 * earned / possible))), match_reasons: [...new Set(reasons)].slice(0, 8), uncertainties, facts: { ...job.facts, breakdown } });
   }
   ranked.sort((a, b) => b.match_score - a.match_score || a.company.localeCompare(b.company) || a.title.localeCompare(b.title));
   return { listings: ranked, duplicatesRemoved: unique.removed, filteredOut: unique.listings.length - ranked.length, drops };

@@ -38,7 +38,7 @@ export function buildQueries(prefs: Preferences): SearchQuery[] {
   }));
 }
 
-export function discover(hits: SearchHit[], prefs: Preferences): Candidate[] {
+export function discover(hits: SearchHit[], prefs: Preferences, limit = 12): Candidate[] {
   const unique = new Map<string, Candidate>();
   for (const hit of hits) {
     const url = publicUrl(hit.url);
@@ -56,7 +56,7 @@ export function discover(hits: SearchHit[], prefs: Preferences): Candidate[] {
   for (const url of prefs.careersUrls) {
     if (publicUrl(url)) unique.set(canonicalUrl(url), { url, title: 'Your careers page', snippet: '', source: sourceFor(url), priority: 60 });
   }
-  return diversify([...unique.values()], 12);
+  return diversify([...unique.values()], limit);
 }
 
 export function diversify<T extends { url: string; priority: number }>(items: T[], limit: number): T[] {

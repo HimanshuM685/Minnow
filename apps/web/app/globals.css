@@ -108,3 +108,9 @@
 .hunt-preferences select:disabled{opacity:.55;cursor:not-allowed}
 .skeleton-card{height:120px;border-radius:var(--radius);margin-bottom:16px;border:1px solid var(--border);background:linear-gradient(90deg,var(--subtle) 25%,var(--surface) 50%,var(--subtle) 75%);background-size:200% 100%;animation:shimmer 1.6s infinite}
 @keyframes shimmer{to{background-position:-200% 0}}
+.setup-steps{margin:0 0 16px;padding-left:20px;color:var(--muted);font-size:14px;line-height:1.8}
+.deep-toggle{display:grid;gap:4px;border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+.deep-toggle:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.hunt-preferences label.deep-label{display:flex;align-items:center;gap:10px;font-weight:600}
+.run-banner{background:var(--accent-soft);color:var(--accent-text);border-radius:12px;padding:12px 14px;font-size:14px;margin-bottom:16px}
+.match-pct{font-size:18px;font-weight:700;color:var(--ok);white-space:nowrap}
