@@ -1,8 +1,8 @@
-import { buildQueries, discover, diversify, extractAgent, extractPage, matchListings, canonicalUrl, companyKey, publicUrl, type Listing, type Preferences, type RunStats, type SearchEvent, type SearchResult, type SourceReport, type SearchHit } from '@minnow/core';
+import { boardApiUrl, boardFromUrl, boardKey, boardsFromHits, buildQueries, discover, diversify, extractAgent, extractPage, listingFromHit, matchListings, parseBoard, rankWithFallback, roleFit, MIN_ROLE_FIT, MIN_RESULTS, isJobUrl, canonicalUrl, companyKey, publicUrl, type Listing, type Preferences, type RunStats, type SearchEvent, type SearchResult, type SourceReport, type SearchHit } from '@minnow/core';
 import { TinyFishClient, TinyFishError, type FetchResponse } from './tinyfish';
 
 // Stop early on Agent scans once this many listings already match the filters.
-const ENOUGH_LISTINGS = 8;
+const ENOUGH_LISTINGS = MIN_RESULTS;
 export function emptyStats(): RunStats {
   return { searchRequests: 0, fetchRequests: 0, fetchedPages: 0, agentRuns: 0, discoveredUrls: 0, extracted: 0, duplicatesRemoved: 0, filteredOut: 0, companies: 0, durationMs: 0 };
 }
@@ -33,9 +33,9 @@ export async function runSearch(
   let authError: TinyFishError | undefined;
   let lastError: TinyFishError | undefined;
   // The bounded source-family queries run in parallel before one selected Fetch batch.
-    await Promise.all(queries.map(async query => {
+  const runQueries = (list: ReturnType<typeof buildQueries>, searchPrefs: Preferences) => Promise.all(list.map(async query => {
       try {
-        const found = await client.search(query, prefs);
+        const found = await client.search(query, searchPrefs);
         hits.push(...found); successes++;
         const searchUrl = new URL('https://api.search.tinyfish.ai');
         searchUrl.searchParams.set('query', query.query);
@@ -46,12 +46,64 @@ export async function runSearch(
         report({ url: 'https://api.search.tinyfish.ai', name: query.name, stage: 'search', status: 'error', message: error instanceof TinyFishError ? error.message : 'Search timed out or could not connect. Try again.', count: 0 });
       }
     }));
+  await runQueries(queries, prefs);
   if (authError) throw authError;
   signal.throwIfAborted();
   if (!successes && !prefs.careersUrls.length) throw lastError && [402, 403, 429].includes(lastError.status) ? lastError : new TinyFishError('No search source completed. Check the source activity below and retry.');
+  // Too few role-matching openings for this country: also search worldwide. Whatever that adds only appears as a
+  // labelled near match ("location relaxed"), never as a strict one.
+  const roleHits = () => new Set(hits.filter(hit => publicUrl(hit.url) && isJobUrl(hit.url)).map(listingFromHit).filter((job): job is Listing => job !== null && roleFit(job.title, prefs.role) >= MIN_ROLE_FIT).map(job => canonicalUrl(job.apply_url))).size;
+  if (prefs.country && roleHits() < 10 && (config.budgetMs ?? 200_000) - (Date.now() - started) > 60_000) {
+    progress('search', `Few openings found for ${prefs.country}; also searching worldwide…`);
+    await runQueries(buildQueries({ ...prefs, country: '', location: '' }).filter(query => !query.name.includes('variant')).slice(0, 4), { ...prefs, country: '', location: '' });
+  }
+  const isSkipped = (url: string) => (config.skippedHosts ?? []).some(host => new URL(url).hostname === host || new URL(url).hostname.endsWith(`.${host}`));
+
+  // ---- Company ATS boards. Every Search hit that is a job page becomes a listing (nothing Search found is thrown
+  // away), and each company's live board feed, read with Fetch, is the source of truth: it lists the roles that are
+  // open right now with title, location, posted date and employment type. A hit missing from its feed is closed.
+  const usable = hits.filter(hit => publicUrl(hit.url) && !isSkipped(hit.url));
+  const hitListings = usable.filter(hit => isJobUrl(hit.url)).map(listingFromHit).filter((job): job is Listing => job !== null);
+  raw.push(...hitListings);
+  const liveByBoard = new Map<string, Set<string>>();
+  const boards = boardsFromHits(usable.map(hit => hit.url), config.deep ? 16 : 10);
+  if (boards.length) {
+    progress('fetch', `Reading ${boards.length} company job ${boards.length === 1 ? 'board' : 'boards'}…`);
+    const feeds = new Map(boards.map(board => [boardApiUrl(board), board]));
+    const urls = [...feeds.keys()];
+    const batches: string[][] = [];
+    for (let i = 0; i < urls.length; i += 10) batches.push(urls.slice(i, i + 10));
+    await Promise.all(batches.map(async batch => {
+      try {
+        const response = await client.fetchPages(batch, prefs, { api: true });
+        for (const page of response.results) {
+          const board = feeds.get(page.url) ?? feeds.get(page.final_url ?? '');
+          if (!board) continue;
+          const jobs = parseBoard(board, typeof page.text === 'string' ? page.text : '');
+          const matching = jobs.filter(job => roleFit(job.title, prefs.role) >= MIN_ROLE_FIT);
+          if (jobs.length) liveByBoard.set(boardKey(board), new Set(jobs.map(job => canonicalUrl(job.apply_url))));
+          raw.push(...matching);
+          report({ url: page.url, name: `${board.vendor}:${board.token}`, stage: 'fetch', status: matching.length ? 'ok' : 'empty', message: jobs.length ? `${jobs.length} open roles on the live board, ${matching.length} match` : 'The board feed could not be read', count: matching.length });
+        }
+        for (const failure of response.errors) report({ url: failure.url, name: new URL(failure.url).hostname, stage: 'fetch', status: 'error', message: `Board feed unavailable (${failure.error})`, count: 0 });
+      } catch (error) {
+        signal.throwIfAborted();
+        if (error instanceof TinyFishError && error.status === 401) throw error;
+        for (const url of batch) report({ url, name: new URL(url).hostname, stage: 'fetch', status: 'error', message: error instanceof TinyFishError ? error.message : 'Board feeds timed out or could not connect.', count: 0 });
+      }
+    }));
+    for (const hit of hitListings) {
+      const board = boardFromUrl(hit.apply_url);
+      const live = board && liveByBoard.get(boardKey(board));
+      if (live && !live.has(canonicalUrl(hit.apply_url))) stale.add(canonicalUrl(hit.apply_url)); // no longer on the company's board
+    }
+    partial();
+  }
+
+  const covered = (url: string) => { const board = boardFromUrl(url); return !!board && liveByBoard.has(boardKey(board)); };
   const discovered = discover(hits, prefs, config.deep ? 24 : 12);
-  const candidates = discovered.filter(item => !(config.skippedHosts ?? []).some(host => new URL(item.url).hostname === host || new URL(item.url).hostname.endsWith(`.${host}`))).slice(0, config.deep ? 24 : 10);
-  for (const candidate of discovered) if (!candidates.includes(candidate)) {
+  const candidates = discovered.filter(item => !isSkipped(item.url) && !covered(item.url)).slice(0, config.deep ? 24 : 10);
+  for (const candidate of discovered) if (!candidates.includes(candidate) && !covered(candidate.url)) {
     report({ url: candidate.url,name: new URL(candidate.url).hostname,stage: 'fetch',status: 'skipped',message: (config.skippedHosts ?? []).some(host=>new URL(candidate.url).hostname===host||new URL(candidate.url).hostname.endsWith(`.${host}`)) ? 'Host skipped by Observatory' : 'Fetch page budget reached',count: 0 });
   }
   stats.discoveredUrls = candidates.length;
@@ -145,13 +197,13 @@ export async function runSearch(
   }
   // Deep only: open the detail page of the best board-only listings so location, level, pay and dates are known
   // and the match score reflects the real posting instead of a link title.
-  if (config.deep && (config.budgetMs ?? 200_000) - (Date.now() - started) > 25_000) {
+  if ((config.budgetMs ?? 200_000) - (Date.now() - started) > 25_000) {
     const seenUrls = new Set(candidates.map(item => canonicalUrl(item.url)));
-    const boards = matchListings(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs).listings
-      .filter(job => job.verification === 'board' && publicUrl(job.apply_url) && !seenUrls.has(canonicalUrl(job.apply_url))).slice(0, 16);
-    if (boards.length) {
-      progress('fetch', `Opening ${boards.length} job details to confirm location, level and pay…`);
-      const urls = [...new Set(boards.map(job => job.apply_url))];
+    const unverified = rankWithFallback(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs).listings
+      .filter(job => job.verification === 'board' && publicUrl(job.apply_url) && !seenUrls.has(canonicalUrl(job.apply_url))).slice(0, config.deep ? 16 : 10);
+    if (unverified.length) {
+      progress('fetch', `Opening ${unverified.length} job details to confirm they are open and match…`);
+      const urls = [...new Set(unverified.map(job => job.apply_url))];
       const batches: string[][] = [];
       for (let i = 0; i < urls.length; i += 8) batches.push(urls.slice(i, i + 8));
       await Promise.all(batches.map(async batch => {
@@ -173,15 +225,15 @@ export async function runSearch(
     }
   }
   signal.throwIfAborted();
-  if (candidates.length && stats.fetchedPages===0 && !reports.some(item=>item.stage==='agent' && ['ok','empty'].includes(item.status))) {
+  if (candidates.length && !raw.length && stats.fetchedPages===0 && !reports.some(item=>item.stage==='agent' && ['ok','empty'].includes(item.status))) {
     throw new TinyFishError('No careers page could be read. Review the source failures and retry.');
   }
   progress('rank', 'Removing duplicates and matching your preferences…');
-  const matched = matchListings(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs);
+  const matched = rankWithFallback(raw.filter(job => !stale.has(canonicalUrl(job.apply_url))), prefs);
   stats.extracted = raw.length;
   stats.duplicatesRemoved = matched.duplicatesRemoved;
   stats.filteredOut = matched.filteredOut;
   stats.companies = new Set(matched.listings.map(job => job.company.toLowerCase())).size;
   stats.durationMs = Date.now() - started;
-  return { runId, preferences: prefs, listings: matched.listings.slice(0, 60), reports, stats, checkedAt: new Date().toISOString(), cached: false, drops: matched.drops };
+  return { runId, preferences: prefs, listings: matched.listings.slice(0, 60), reports, stats, checkedAt: new Date().toISOString(), cached: false, drops: matched.drops, strict: matched.strict, near: matched.near, relaxed: matched.relaxed };
 }

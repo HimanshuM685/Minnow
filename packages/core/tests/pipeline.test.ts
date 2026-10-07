@@ -48,8 +48,8 @@ test('pipeline reads selected job details in small parallel batches, escalates a
     const result = await runSearch({ ...defaultPreferences, role: 'Software engineer', seniority: 'intern', location: 'London', sources: ['greenhouse', 'ashby'] }, 'r1', 'test-key', new AbortController().signal, event => events.push(event), { maxAgentRuns: 2, agentDuration: 30 });
     assert.equal(result.listings.length, 2);
     assert.equal(result.stats.companies, 2);
-    assert.equal(result.stats.searchRequests, 2);
-    assert.equal(result.stats.fetchRequests, 3, 'three candidates are read in three parallel batches');
+    assert.equal(result.stats.searchRequests, 4, 'two ATS families, each with an internship wording variant');
+    assert.equal(result.stats.fetchRequests, 4, 'one board-feed call plus three candidate pages in parallel batches');
     assert.equal(result.stats.agentRuns, 1);
     assert.ok(result.reports.some(report => report.url === closed && report.status === 'error'));
     assert.ok(result.listings.every(job => job.verification === 'detail'));

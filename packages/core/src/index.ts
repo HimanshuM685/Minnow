@@ -7,3 +7,5 @@ export * from './discovery';
 export * from './extraction';
 export * from './matching';
 export * from './geography';
+export * from './role';
+export * from './ats';

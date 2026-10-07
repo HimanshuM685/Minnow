@@ -46,7 +46,7 @@ export function inferVisa(text: string): { signal: Listing['visa_signal']; evide
   return { signal: 'unknown', evidence: '' };
 }
 
-function inferWorkMode(location: string, title: string, text: string): Listing['work_mode'] {
+export function inferWorkMode(location: string, title: string, text: string): Listing['work_mode'] {
   const header = `${location} ${title}`;
   if (/\bhybrid\b/i.test(header) || /(?:this (?:role|position)|work (?:mode|arrangement)|working model)[^.\n]{0,50}\bhybrid\b/i.test(text)) return 'hybrid';
   if (/\bremote\b/i.test(header) || /(?:this (?:role|position) is|fully|100%|work (?:mode|arrangement):?)[^.\n]{0,40}\bremote\b/i.test(text)) return 'remote';
@@ -59,7 +59,7 @@ export function isClosed(text: string): boolean {
   return /(?:this (?:job|position|role|posting|opening) (?:is |has been )?(?:closed|filled|expired|no longer available)|no longer accepting applications|job (?:not found|unavailable)|position has been filled)/i.test(top);
 }
 
-function companyFrom(page: FetchPage, url: string): string {
+export function companyFrom(page: FetchPage, url: string): string {
   const title = page.title ?? '';
   const at = title.match(/\s+at\s+([^|]+?)(?:\s*[|]|$)/i) ?? title.match(/(?:careers|jobs|openings)\s+(?:at|with)\s+(.+)/i);
   if (at) return plain(at[1]).slice(0, 120);
@@ -104,7 +104,7 @@ function excerpt(text: string, description?: string | null): string {
   return chosen.slice(0, 2).join(' ').slice(0, 800);
 }
 
-function makeListing(input: Partial<Listing> & Pick<Listing, 'title' | 'company' | 'apply_url' | 'source_url'>): Listing {
+export function makeListing(input: Partial<Listing> & Pick<Listing, 'title' | 'company' | 'apply_url' | 'source_url'>): Listing {
   return listingSchema.parse({
     id: hash(canonicalUrl(input.apply_url)), location: 'Not stated', seniority: 'unknown', work_mode: 'unknown',
     visa_signal: 'unknown', visa_evidence: '', snippet: '', sources: [input.source_url], posted_at: null,

@@ -1,6 +1,7 @@
 import type { Preferences, SourceName } from './contracts';
 import { countryAliases } from './geography';
 import { seniorityFor } from './filters';
+import { fixTypos, INTERN_MARKERS, isLevelOnlyRole } from './role';
 import { canonicalUrl, companyKey, isJobUrl, publicUrl, sourceFor } from './urls';
 
 export interface SearchHit { title: string; snippet: string; url: string; date?: string; }
@@ -22,20 +23,30 @@ const workModeText = { any: '', remote: 'remote', hybrid: 'hybrid', onsite: 'on-
 export function buildQueries(prefs: Preferences): SearchQuery[] {
   const f = prefs.filters;
   const seniority = f.experience.band === 'any' ? prefs.seniority : seniorityFor(f.experience);
-  const level = { any: '', intern: 'internship intern', new_grad: 'new graduate entry level', mid: '', senior: 'senior' }[seniority];
+  const internIntent = INTERN_MARKERS.test(prefs.role) || seniority === 'intern';
+  // An intern search says internship once; "entry level" or "full-time" wording would pull in ordinary jobs.
+  const level = internIntent ? 'internship' : { any: '', intern: 'internship intern', new_grad: 'new graduate entry level', mid: '', senior: 'senior' }[seniority];
   const countryName = prefs.country ? countryAliases[prefs.country]?.[0] ?? '' : '';
-  const place = [prefs.location, countryName && !prefs.location.toLowerCase().includes(countryName) ? countryName : '', workModeText[prefs.workMode]].filter(Boolean).join(' ');
+  // The country already travels as Search's location parameter; name it in the text only when no city was given.
+  const place = [prefs.location && !/^\s*remote\s*$/i.test(prefs.location) ? prefs.location : '', workModeText[prefs.workMode] || (/^\s*remote\s*$/i.test(prefs.location) ? 'remote' : ''), prefs.location ? '' : countryName].filter(Boolean).join(' ');
   const companies = f.companiesInclude.length ? `(${f.companiesInclude.map(name => `"${name}"`).join(' OR ')})` : '';
   const excluded = f.companiesExclude.map(name => `-"${name}"`).join(' ');
   // Long keyword lists over-constrain Search; the first few carry the intent. Profession only helps a one-word role.
   const keywords = prefs.keywords.split(/[,;\n]/).map(item => item.trim()).filter(Boolean).slice(0, 3).join(' ');
-  const profession = prefs.role.trim().split(/\s+/).length > 1 ? '' : prefs.profession;
-  const base = [prefs.role, profession, keywords, level, employmentText[f.employmentType], place, companies, excluded].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
-  return [...new Set(prefs.sources)].map(source => ({
-    name: { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday', portal: 'Public job boards' }[source],
-    query: `${base} ${source === 'careers' ? 'careers open positions apply' : 'jobs apply'}`,
-    domains: domains[source], exclude: source === 'careers' ? allBoards : 'linkedin.com',
-  }));
+  const role = fixTypos(prefs.role).replace(/\s+/g, ' ').trim();
+  const levelOnly = isLevelOnlyRole(role);
+  const profession = role.split(/\s+/).length > 1 && !levelOnly ? '' : prefs.profession;
+  const internship = internIntent;
+  const compose = (head: string, tail = '') => [head, profession, keywords, level, internIntent && f.employmentType === 'full_time' ? '' : employmentText[f.employmentType], place, companies, excluded, tail].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  // A second wording catches boards that title the same job differently (AI = machine learning, intern = internship 2027).
+  const second = internship ? compose(role.replace(INTERN_MARKERS, '').trim() || role, 'internship 2026 2027') : /\bai\b/.test(role) ? compose(role.replace(/\bai\b/g, 'machine learning')) : '';
+  const name = { careers: 'Company careers', greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday', portal: 'Public job boards' };
+  const ats = new Set(['greenhouse', 'lever', 'ashby', 'workday']);
+  return [...new Set(prefs.sources)].flatMap(source => {
+    const suffix = source === 'careers' ? 'careers open positions apply' : 'jobs apply';
+    const make = (head: string, label = name[source]) => ({ name: label, query: `${head} ${suffix}`, domains: domains[source], exclude: source === 'careers' ? allBoards : 'linkedin.com' });
+    return ats.has(source) && second && second !== compose(role) ? [make(compose(role)), make(second, `${name[source]} (variant)`)] : [make(compose(role))];
+  });
 }
 
 export function discover(hits: SearchHit[], prefs: Preferences, limit = 12): Candidate[] {

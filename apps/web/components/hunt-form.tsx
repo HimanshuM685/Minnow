@@ -11,6 +11,8 @@ import { TELEGRAM_HANDLE, TELEGRAM_URL } from '@/lib/links';
 import { savePreferences } from '@/app/(dashboard)/dashboard/actions';
 // An error reported by the server (final), as opposed to a dropped connection (recoverable).
 class HuntFailed extends Error {}
+// Used only to prefill an empty country from the browser time zone; the user can change it.
+const ZONES: Record<string, string> = { 'Asia/Kolkata': 'IN', 'Asia/Calcutta': 'IN', 'Europe/London': 'GB', 'Europe/Berlin': 'DE', 'Europe/Paris': 'FR', 'Asia/Singapore': 'SG', 'Australia/Sydney': 'AU', 'Australia/Melbourne': 'AU', 'America/Toronto': 'CA', 'America/Vancouver': 'CA', 'America/New_York': 'US', 'America/Chicago': 'US', 'America/Denver': 'US', 'America/Los_Angeles': 'US' };
 const COUNTRIES = [['IN', 'India'], ['US', 'United States'], ['GB', 'United Kingdom'], ['CA', 'Canada'], ['DE', 'Germany'], ['FR', 'France'], ['SG', 'Singapore'], ['AU', 'Australia']];
 const OPTIONS = {
   experience: [['any', 'Any experience'], ['intern', 'Internship'], ['entry', 'Fresher / entry'], ['1-3', '1–3 years'], ['3-5', '3–5 years'], ['5-8', '5–8 years'], ['8+', '8+ years'], ['custom', 'Custom min / max']],
@@ -44,6 +46,7 @@ export function HuntForm({ initial, skills, latest, configured, credits, deepDef
   const set = <K extends keyof HuntFilters>(key: K, next: HuntFilters[K]) => setFilters(old => ({ ...old, [key]: next }));
   const isRemote = /^\s*remote\s*$/i.test(value.location_label);
   const radiusEnabled = value.location_label.trim() !== '' && !isRemote;
+  useEffect(() => { try { const guess = ZONES[Intl.DateTimeFormat().resolvedOptions().timeZone]; if (guess) setValue(old => old.location_country_code ? old : { ...old, location_country_code: guess }); } catch { /* no time zone available */ } }, []);
   const clearAll = () => { setValue(initial); setKeywords(initial.keywords.join(', ')); setFilters(savedFilters); setError(''); setMessage('Filters reset to your saved preferences.'); };
   const [deep, setDeep] = useState(deepDefault);
   const DEEP_COST = 2;
@@ -64,10 +67,10 @@ export function HuntForm({ initial, skills, latest, configured, credits, deepDef
     catch { setError('Could not save preferences. Check the database connection.'); return false; }
     finally { setSaving(false); }
   }
-  type HuntEvent = { type: string; stage?: string; message?: string; counts?: typeof counts; searchId?: string; found?: number; dropped?: { filter: string; count: number }[] };
-  const finish = (next: { counts: typeof counts; found?: number; dropped?: { filter: string; count: number }[] }) => {
+  type HuntEvent = { type: string; stage?: string; message?: string; counts?: typeof counts; searchId?: string; found?: number; strict?: number; near?: number; relaxed?: string[]; dropped?: { filter: string; count: number }[] };
+  const finish = (next: { counts: typeof counts; found?: number; strict?: number; near?: number; relaxed?: string[]; dropped?: { filter: string; count: number }[] }) => {
     setCounts(next.counts); setStage('done');
-    setMessage(next.found === 0 ? (next.dropped?.length ? `Nothing was left after your hard filters: ${next.dropped.map(item => `${item.filter} removed ${item.count}`).join(', ')}. Nothing was widened. Loosen one and run again. This hunt was not charged.` : 'No matching openings were found this time. This hunt was not charged. Try a broader role or location.') : 'Your shortlist is ready.');
+    setMessage(next.found === 0 ? (next.dropped?.length ? `Nothing was left after your hard filters: ${next.dropped.map(item => `${item.filter} removed ${item.count}`).join(', ')}. Nothing was widened. Loosen one and run again. This hunt was not charged.` : 'No matching openings were found this time. This hunt was not charged. Try a broader role or location.') : next.near ? `${next.strict ?? 0} strict match${next.strict === 1 ? '' : 'es'} and ${next.near} near match${next.near === 1 ? '' : 'es'} (${(next.relaxed ?? []).join(', ')} relaxed, each one is labelled). Your shortlist is ready.` : 'Your shortlist is ready.');
   };
   // Follows a hunt by id: used when the stream drops, for Deep Search (which runs in the background), and when a
   // returning user already has a hunt running.
@@ -100,14 +103,26 @@ export function HuntForm({ initial, skills, latest, configured, credits, deepDef
   async function run(refresh: boolean) {
     setBusy(true); setError(''); setCounts(null); setStage('search'); setMessage('Searching live careers pages…');
     let searchId = '';
+    // One id per click: if the response is lost and we retry, the server returns the first attempt instead of charging again.
+    const requestId = crypto.randomUUID();
     try {
       let response: Response;
-      try { response = await fetch('/api/hunt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh, form: prefs(), deep }) }); }
-      catch { throw new Error('Could not reach Minnow. Check your connection and try again. Nothing was charged.'); }
+      try { response = await fetch('/api/hunt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh, form: prefs(), deep, requestId }) }); }
+      catch {
+        // The request may have reached the server even though the response was lost: ask before giving up.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          try {
+            const check = await fetch(`/api/hunt?request=${requestId}`, { cache: 'no-store' });
+            if (check.ok) { const found = await check.json() as { searchId: string }; await waitForHunt(found.searchId, 'Reconnected. Your search is running…'); return; }
+          } catch { /* still offline */ }
+        }
+        throw new Error('Could not reach Minnow. Check your connection and try again. Nothing was charged.');
+      }
       if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new Error(body.error ?? `The server returned ${response.status}. Please try again.`); }
-      if (deep) {
-        // Deep Search answers immediately and keeps working on the server, so the user may leave this page.
-        const started = await response.json() as { searchId: string };
+      if (response.headers.get('content-type')?.includes('application/json')) {
+        // Deep Search (or a retried click) answers immediately and keeps working on the server, so the user may leave this page.
+        const started = await response.json() as { searchId: string; duplicate?: boolean };
         router.refresh(); // the 2 credits are already spent
         await waitForHunt(started.searchId, 'Deep Search is running on our servers. You can leave this page; your shortlist will be waiting.');
         return;
@@ -120,7 +135,7 @@ export function HuntForm({ initial, skills, latest, configured, credits, deepDef
           if (event.type === 'started') searchId = event.searchId ?? '';
           if (event.type === 'progress') { setStage(event.stage ?? ''); setMessage(event.message ?? ''); }
           if (event.type === 'error') throw new HuntFailed(event.message ?? 'The hunt could not finish.');
-          if (event.type === 'complete') { done = true; finish({ counts: event.counts ?? null, found: event.found, dropped: event.dropped }); break; }
+          if (event.type === 'complete') { done = true; finish({ counts: event.counts ?? null, found: event.found, strict: event.strict, near: event.near, relaxed: event.relaxed, dropped: event.dropped }); break; }
         }
       } catch (e) { if (e instanceof HuntFailed) throw e; /* otherwise the connection dropped */ }
       if (!done) {

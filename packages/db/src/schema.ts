@@ -115,6 +115,12 @@ ON CONFLICT (user_id) DO NOTHING;`,
 `ALTER TABLE preferences ADD COLUMN IF NOT EXISTS filters JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS facts JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS uncertainties TEXT[] NOT NULL DEFAULT '{}'`,
+`CREATE TABLE IF NOT EXISTS credit_ledger (id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL REFERENCES profiles(user_id) ON DELETE CASCADE, delta INTEGER NOT NULL, reason TEXT NOT NULL, search_id UUID, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS credit_ledger_user ON credit_ledger(user_id, id);
+INSERT INTO credit_ledger(user_id, delta, reason) SELECT w.user_id, w.credits, 'opening_balance' FROM wallets w WHERE NOT EXISTS (SELECT 1 FROM credit_ledger c WHERE c.user_id = w.user_id);
+UPDATE searches SET status='error', error='Closed during upgrade: duplicate running hunt.', finished_at=now() WHERE status='running' AND id NOT IN (SELECT DISTINCT ON (user_id) id FROM searches WHERE status='running' ORDER BY user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS one_running_search_per_user ON searches(user_id) WHERE status='running';
+CREATE UNIQUE INDEX IF NOT EXISTS search_request_once ON searches(user_id, (preference_snapshot->>'request_id')) WHERE preference_snapshot->>'request_id' IS NOT NULL`,
 ];
 
 let ready: Promise<void> | undefined;

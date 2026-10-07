@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { neonConfig } from '@neondatabase/serverless';
-import { searchHistory, latestSearchWithResults, bestMatches, spendCredits, forgetEnsuredProfiles, reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
+import { creditAudit, searchHistory, latestSearchWithResults, bestMatches, spendCredits, forgetEnsuredProfiles, reconcileStaleSearches, hasRunningSearch, addCredits, getWallet, spendCredit, addSearchEvent, copyCachedListings, createSearch, ensureProfile, findCachedSearch, finishSearch, getPreferences, getProfile, getResume, getSearchEvents, getSearchListings, hideListing, insertListings, listPeople, listSources, overviewStats, savePreferences, skippedHosts, skipSource, updateProfile, updateSourceHealth, upsertResume, downloadResume } from '../src/index';
 import { executeHunt, prepareHunt, runHunt, type HuntMessage } from '../../../apps/web/lib/hunt';
 import { getSearch } from '../src/index';
 import { migrations } from '../src/schema';
@@ -101,7 +101,7 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
     // Exercise the actual web orchestrator with real SQL and mocked TinyFish transport.
     const previousKey=process.env.TINYFISH_API_KEY;
     const previousAgent=process.env.MAX_AGENT_RUNS;
-    process.env.TINYFISH_API_KEY='test-key';process.env.MAX_AGENT_RUNS='0';
+    process.env.TINYFISH_API_KEY='test-key';process.env.MAX_AGENT_RUNS='0';process.env.TINYFISH_SEARCHES_PER_MINUTE='500';
     let fail=false;let tinyfishRequests=0;
     const fetchMock=mock.method(globalThis,'fetch',async(input:string|URL|Request,init?:RequestInit)=>{
       tinyfishRequests++;
@@ -117,7 +117,7 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
       const events:HuntMessage[]=[];
       await executeHunt({id:'user-a',name:'Ada'},true,new AbortController().signal,event=>events.push(event));
       const completed=events.find(event=>event.type==='complete');assert.ok(completed && completed.type==='complete');
-      assert.equal(completed.counts.search,5);assert.equal(completed.counts.fetch,2);assert.equal(completed.counts.agent,0);
+      assert.equal(completed.counts.search,9,'5 country queries plus 4 worldwide ones because few openings matched');assert.equal(completed.counts.fetch,3);assert.equal(completed.counts.agent,0);
       assert.equal((await getSearch(completed.searchId))?.status,'done');
       assert.equal((await getSearchListings(completed.searchId,'user-a')).length,2);
       const trace=await getSearchEvents(completed.searchId);
@@ -205,6 +205,18 @@ test('Neon query helpers round-trip preferences, durable traces, moderation, cac
       assert.ok(deepListings.length>0);
       assert.ok(deepListings.every(row=>typeof (row.facts.breakdown as Record<string,unknown>|undefined)?.role==='object'),'every post carries its per-user score breakdown');
       assert.equal(await balance(),deepBefore-2,'a deep hunt that found jobs stays charged');
+      // The clicked button sets the price at the same moment: Search = 1, Deep Search = 2; a retried click is not charged again.
+      const clickId=crypto.randomUUID();
+      const searchClick=await prepareHunt({id:'user-a',name:'Ada'},true,deepForm,false,clickId);
+      assert.ok(!('duplicateOf' in searchClick));
+      assert.equal(await balance(),deepBefore-3,'normal Search charged 1');
+      const retried=await prepareHunt({id:'user-a',name:'Ada'},true,deepForm,false,clickId);
+      assert.deepEqual(retried,{duplicateOf:(searchClick as {run:{id:string}}).run.id});
+      assert.equal(await balance(),deepBefore-3,'the retry cost nothing');
+      await assert.rejects(prepareHunt({id:'user-a',name:'Ada'},true,deepForm,true),/already running/,'a second hunt cannot start while one runs');
+      assert.equal(await balance(),deepBefore-3);
+      await runHunt(searchClick as Parameters<typeof runHunt>[0],new AbortController().signal,()=>{});
+      assert.equal((await creditAudit('user-a'))?.drift,0,'wallet and ledger agree');
       // Zero-listing searches are not cache hits.
       const empty=await createSearch({userId:'user-b',preferenceSnapshot:{hash:'empty-hash'}});
       await finishSearch(empty.id,'done',null,{search:1,fetch:0,agent:0});

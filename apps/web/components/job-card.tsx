@@ -9,7 +9,7 @@ export function JobCard({ job, isNew = false, from }: { job: ListingRow; isNew?:
   return <article className="job-card persisted-card">
     <div className="company-avatar blue">{job.company.slice(0, 2).toUpperCase()}</div>
     <div className="job-main">
-      <div className="job-company"><span>{job.company}</span><span className="source-tag">{job.source_name}</span>{isNew && <span className="new-badge">New since last hunt</span>}{from && <span className="source-tag">From: {from}</span>}</div>
+      <div className="job-company"><span>{job.company}</span><span className="source-tag">{job.source_name}</span>{job.facts.open_on_board === true ? <span className="new-badge">Open on the company’s board</span> : job.uncertainties?.some(note => /not inspected/.test(note)) && <span className="source-tag">Not verified open</span>}{Array.isArray(job.facts.relaxed) && job.facts.relaxed.length > 0 && <span className="source-tag">Near match</span>}{isNew && <span className="new-badge">New since last hunt</span>}{from && <span className="source-tag">From: {from}</span>}</div>
       <h3>{job.title}</h3>
       <div className="job-meta"><span><MapPin size={14} />{job.location || 'Not stated'}</span><span>{job.seniority.replace('_', ' ')}</span><span>{job.work_mode}</span></div>
       <p className="job-snippet">{job.snippet}</p>

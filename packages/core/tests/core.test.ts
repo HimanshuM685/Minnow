@@ -48,7 +48,7 @@ test('public job-portal detail paths are recognized alongside ATS job URLs', () 
 
 test('source discovery adapts to preferences and filters irrelevant or gated results', () => {
   const queries = buildQueries({ ...prefs, role: 'Product designer', location: 'London', sources: ['ashby', 'careers'] });
-  assert.equal(queries.length, 2);
+  assert.equal(queries.length, 3, 'ATS families add an internship wording variant for intern searches');
   assert.match(queries[0].query, /Product designer.*London/);
   assert.equal(queries[0].domains, 'jobs.ashbyhq.com');
   const found = discover([
@@ -221,9 +221,9 @@ test('skills ALL vs ANY, salary overlap and currency mismatch rank without dropp
   assert.equal(matchListings(rows, withFilters({ ...filters, skillMode: 'any' })).listings.length, 3);
 });
 
-test('queries carry role, keywords, city, country, mode, employment type and company names only', () => {
+test('queries carry role, keywords, city, mode, employment type and company names only (the country travels as the Search location parameter)', () => {
   const [query] = buildQueries(withFilters({ employmentType: 'contract', companiesInclude: ['Acme'], companiesExclude: ['Evil'], salary: { min: 5, max: 9, currency: 'USD', period: 'annual' }, radiusKm: 25, }, { keywords: 'python', location: 'Berlin', country: 'DE', workMode: 'hybrid', sources: ['careers', 'workday'] }));
-  for (const part of ['Software engineer', 'python', 'Berlin', 'germany', 'hybrid', 'contract', '"Acme"', '-"Evil"']) assert.ok(query.query.includes(part), part);
+  for (const part of ['Software engineer', 'python', 'Berlin', 'hybrid', 'contract', '"Acme"', '-"Evil"']) assert.ok(query.query.includes(part), part);
   assert.ok(!/25|salary|\b5\b/.test(query.query.replace(/Software engineer/i, '')));
   assert.deepEqual(buildQueries(withFilters({}, { sources: ['careers', 'workday'] })).map(item => item.name), ['Company careers', 'Workday']);
 });
@@ -268,9 +268,9 @@ test('match score is the percentage of what this user asked for, with a stored b
   assert.deepEqual(Object.keys(matched.facts.breakdown!).sort(), ['mode', 'place', 'quality', 'role']);
   assert.equal(matched.facts.breakdown!.place.earned, 15, 'confirmed city earns full place points');
   assert.ok(matched.match_score >= 90 && matched.match_score <= 100);
-  // Unknown earns half, an explicit conflict earns nothing.
+  // Unknown earns 40%, an explicit conflict earns nothing.
   const unknown = matchListings([job({ location: 'Not stated', work_mode: 'unknown', seniority: 'unknown' })], asked).listings[0];
-  assert.equal(unknown.facts.breakdown!.place.earned, 7.5); assert.equal(unknown.facts.breakdown!.mode.earned, 2.5);
+  assert.equal(unknown.facts.breakdown!.place.earned, 6); assert.equal(unknown.facts.breakdown!.mode.earned, 2);
   assert.ok(unknown.match_score < matched.match_score);
   const refused = matchListings([job({ seniority: 'unknown', visa_signal: 'no_sponsor' })], withFilters({ visa: 'needs_sponsorship' }, { role: 'Software Engineer Intern' })).listings[0];
   const sponsored = matchListings([job({ seniority: 'unknown', visa_signal: 'sponsors' })], withFilters({ visa: 'needs_sponsorship' }, { role: 'Software Engineer Intern' })).listings[0];
@@ -282,4 +282,85 @@ test('Deep discovery keeps a wider candidate list than the normal limit', () => 
   const hits = Array.from({ length: 20 }, (_, i) => ({ url: `https://job-boards.greenhouse.io/company${i}/jobs/${100 + i}`, title: `Software Engineer at C${i}`, snippet: '' }));
   assert.equal(discover(hits, { ...prefs, sources: ['greenhouse'] }).length, 12);
   assert.equal(discover(hits, { ...prefs, sources: ['greenhouse'] }, 24).length, 20);
+});
+
+// ---- ATS feeds, role understanding and the 6-result floor ----
+import { boardApiUrl, boardFromUrl, boardsFromHits, fixTypos, isLevelOnlyRole, listingFromHit, parseBoard, rankWithFallback, roleFit as fit, MIN_ROLE_FIT } from '../src/index.js';
+
+const greenhouseFeed = '```\n' + JSON.stringify({ jobs: [
+  { id: 101, title: 'Software Engineer, Intern (Summer 2027)', location: { name: 'Singapore' }, first_published: '2026-09-03T13:32:53-04:00', updated_at: '2026-09-25T16:45:00-04:00', company_name: 'Stripe' },
+  { id: 102, title: 'Internal Audit Lead', location: { name: 'London' }, first_published: '2026-09-01T00:00:00Z', company_name: 'Stripe' },
+] }) + '\n```';
+const leverFeed = JSON.stringify([{ id: 'aaaaaaaa-1111-2222-3333-444444444444', text: 'Backend Engineer Intern', hostedUrl: 'https://jobs.lever.co/acme/aaaaaaaa-1111-2222-3333-444444444444', categories: { location: 'Remote - India', commitment: 'Intern', team: 'Engineering' }, workplaceType: 'remote', createdAt: 1790000000000, salaryRange: { min: 20, max: 30, currency: 'usd', interval: 'per-hour-wage' }, descriptionPlain: 'Work with Python and SQL.\nLearn fast.' }]).replace('Work with Python and SQL.\\nLearn fast.', 'Work with Python and SQL.\nLearn fast.');
+const ashbyFeed = '"x":1},{"id":"11111111-1111-1111-1111-111111111111","title":"AI Engineer Intern","employmentType":"Intern","location":"Remote - US","publishedAt":"2026-09-25T16:09:30.018+00:00","isListed":true,"isRemote":true,"workplaceType":"Remote","jobUrl":"https://jobs.ashbyhq.com/acme/11111111-1111-1111-1111-111111111111","applyUrl":"https://jobs.ashbyhq.com/acme/11111111-1111-1111-1111-111111111111/application","descriptionHtml":"<p>x</p>","descriptionPlain":"Build LLM features."},{"id":"22222222-2222-2222-2222-222222222222","title":"Unlisted Role","employmentType":"FullTime","location":"Berlin","publishedAt":"2026-09-01T00:00:00Z","isListed":false,"isRemote":false,"workplaceType":"OnSite","jobUrl":"https://jobs.ashbyhq.com/acme/22222222-2222-2222-2222-222222222222","descriptionHtml":"<p>y</p>","descriptionPlain":"z"}],"apiVersion":"1"}';
+
+test('board URLs map to their public ATS feeds, strongest boards first', () => {
+  assert.deepEqual(boardFromUrl('https://job-boards.greenhouse.io/stripe/jobs/8031833'), { vendor: 'greenhouse', token: 'stripe' });
+  assert.deepEqual(boardFromUrl('https://jobs.lever.co/palantir/6ed76ce8-4156-4b60-b120-403538bd66cd'), { vendor: 'lever', token: 'palantir' });
+  assert.deepEqual(boardFromUrl('https://jobs.ashbyhq.com/cohere/8c035d3d'), { vendor: 'ashby', token: 'cohere' });
+  assert.equal(boardFromUrl('https://example.com/jobs/1'), null);
+  assert.equal(boardApiUrl({ vendor: 'greenhouse', token: 'stripe' }), 'https://boards-api.greenhouse.io/v1/boards/stripe/jobs');
+  assert.deepEqual(boardsFromHits(['https://job-boards.greenhouse.io/a/jobs/1', 'https://job-boards.greenhouse.io/b/jobs/1', 'https://job-boards.greenhouse.io/b/jobs/2', 'https://x.com'], 5).map(board => board.token), ['b', 'a']);
+});
+
+test('ATS feeds parse into dated, structured, open listings and survive bad input', () => {
+  const [intern, audit] = parseBoard({ vendor: 'greenhouse', token: 'stripe' }, greenhouseFeed);
+  assert.equal(intern.apply_url, 'https://job-boards.greenhouse.io/stripe/jobs/101');
+  assert.equal(intern.location, 'Singapore'); assert.equal(intern.company, 'Stripe'); assert.equal(intern.source_name, 'greenhouse');
+  assert.equal(intern.posted_at, '2026-09-03T17:32:53.000Z'); assert.equal(intern.facts.open_on_board, true); assert.equal(intern.verification, 'detail');
+  assert.equal(audit.title, 'Internal Audit Lead');
+  const [lever] = parseBoard({ vendor: 'lever', token: 'acme' }, leverFeed);
+  assert.equal(lever.facts.employment_type, 'internship'); assert.equal(lever.work_mode, 'remote'); assert.deepEqual(lever.facts.salary, { min: 20, max: 30, currency: 'USD', period: 'hourly' });
+  assert.ok(lever.snippet.includes('Python') && lever.posted_at!.startsWith('2026'));
+  const ashby = parseBoard({ vendor: 'ashby', token: 'acme' }, ashbyFeed);
+  assert.deepEqual(ashby.map(job => job.title), ['AI Engineer Intern'], 'unlisted postings are skipped; feeds missing their opening braces still parse');
+  assert.equal(ashby[0].work_mode, 'remote'); assert.equal(ashby[0].facts.employment_type, 'internship');
+  for (const vendor of ['greenhouse', 'lever', 'ashby'] as const) assert.deepEqual(parseBoard({ vendor, token: 'x' }, 'not json at all'), []);
+});
+
+test('a Search hit that is a job page becomes a listing instead of being thrown away', () => {
+  const job = listingFromHit({ url: 'http://job-boards.greenhouse.io/samsara/jobs/8082091', title: 'Samsara Careers | Software Engineering Internship - San Francisco', snippet: 'This internship is a full-time, paid experience.' })!;
+  assert.equal(job.title, 'Software Engineering Internship'); assert.equal(job.location, 'San Francisco');
+  assert.equal(job.apply_url, 'https://job-boards.greenhouse.io/samsara/jobs/8082091'); assert.equal(job.verification, 'board');
+});
+
+test('role understanding: typos, synonyms, level-only roles and false friends', () => {
+  assert.equal(fixTypos('AI Enginner'), 'AI engineer');
+  assert.ok(fit('Machine Learning Engineer Intern', 'AI Enginner Intern') >= MIN_ROLE_FIT, 'ML engineer satisfies an AI engineer search');
+  assert.ok(fit('LLM Engineer Intern (Summer 2027)', 'AI Engineer Intern') >= MIN_ROLE_FIT);
+  assert.equal(fit('Internal Audit Lead', 'Intern'), 0, 'Internal is not Intern');
+  assert.ok(isLevelOnlyRole('Intern') && isLevelOnlyRole('Graduate trainee') && !isLevelOnlyRole('Software Intern'));
+  assert.ok(fit('Software Engineering Internship - San Francisco', 'Intern') >= MIN_ROLE_FIT, 'a level-only role matches any internship');
+  assert.ok(fit('Software Engineer', 'Software Engineer Intern') < MIN_ROLE_FIT, 'an intern search never returns a regular engineering job');
+  assert.ok(fit('Director of Engineering', 'Software Engineer') < MIN_ROLE_FIT);
+});
+
+const internJob = (n: number, over: Partial<Listing> = {}) => job({ id: `i${n}`, title: `Software Engineer Intern ${n}`, company: `Co${n}`, apply_url: `${board}/jobs/${900 + n}`, seniority: 'intern', work_mode: 'unknown', location: 'San Francisco, CA', ...over });
+
+test('intern searches: internship satisfies full-time, Remote keeps unstated modes, near matches fill the 6-result floor with labels', () => {
+  const rows = Array.from({ length: 8 }, (_, i) => internJob(i, { facts: { employment_type: 'internship' } as Listing['facts'] }));
+  const asked = withFilters({ employmentType: 'full_time', experience: { band: 'entry' } }, { role: 'Software Engineer Intern', location: 'Remote', country: '', seniority: 'intern' });
+  const strict = matchListings(rows, asked);
+  assert.equal(strict.listings.length, 8, 'internship passes a full-time filter and unstated mode passes Remote');
+  assert.ok(strict.listings.every(item => item.uncertainties.includes('Location not confirmed')));
+  // Kolkata + India: every posting is a US office job, so strict finds none and the fallback must say so.
+  const india = withFilters({}, { role: 'Software Engineer Intern', location: 'Kolkata', country: 'IN', seniority: 'intern' });
+  assert.equal(matchListings(rows, india).listings.length, 0);
+  const ranked = rankWithFallback(rows, india);
+  assert.equal(ranked.listings.length, 8); assert.equal(ranked.near, 8); assert.equal(ranked.strict, 0); assert.deepEqual(ranked.relaxed, ['location']);
+  assert.ok(ranked.listings.every(item => item.facts.relaxed?.[0] === 'location' && item.match_score <= 64 && item.uncertainties[0] === 'Near match: location relaxed'));
+  assert.equal(ranked.drops.location, 8, 'the empty strict result still names the filter that blocked it');
+  // Strict results stay first and unlabelled when there are enough of them.
+  const enough = rankWithFallback(Array.from({ length: 6 }, (_, i) => internJob(i, { location: 'Kolkata, India' })), india);
+  assert.equal(enough.near, 0); assert.equal(enough.strict, 6);
+});
+
+test('scores are calibrated: unverified board links are capped, exact wording beats partial', () => {
+  const asked = withFilters({}, { role: 'Software Engineer Intern', seniority: 'intern' });
+  const verified = matchListings([internJob(1, { verification: 'detail', location: 'London, UK' })], asked).listings[0];
+  const boardOnly = matchListings([internJob(2, { verification: 'board', location: 'London, UK' })], asked).listings[0];
+  const senior = matchListings([internJob(3, { title: 'Senior Software Engineer Intern', verification: 'detail' })], asked).listings[0];
+  assert.ok(verified.match_score > 85 && verified.match_score <= 100);
+  assert.ok(boardOnly.match_score <= 65);
+  assert.ok(senior.match_score < verified.match_score && senior.uncertainties.includes('Senior-level title'));
 });

@@ -1,14 +1,15 @@
 import Link from 'next/link';
-import { DEEP_SEARCH_COST, FREE_CREDITS } from '@minnow/db';
+import { creditLedger, DEEP_SEARCH_COST, FREE_CREDITS } from '@minnow/db';
 import { requireUser } from '@/lib/auth/session';
 import { currentWallet } from '@/lib/wallet';
 import { TELEGRAM_HANDLE, TELEGRAM_URL, TINYFISH_SIGNUP_URL } from '@/lib/links';
 import { TinyfishKeyForm } from '@/components/tinyfish-key-form';
 export const dynamic = 'force-dynamic';
+const reasons: Record<string, string> = { signup: 'Welcome credits', opening_balance: 'Opening balance', search: 'Search', deep_search: 'Deep Search', refund: 'Refund', admin: 'Added by Minnow', adjustment: 'Adjustment' };
 const external = { target: '_blank', rel: 'noopener noreferrer' } as const;
 export default async function CreditsPage() {
   const user = await requireUser();
-  const { credits, hasKey } = await currentWallet(user);
+  const [{ credits, hasKey }, ledger] = await Promise.all([currentWallet(user), creditLedger(user.id, 12)]);
   return <>
     <div className="page-heading">
       <h1>{credits > 0 || hasKey ? 'You have credits.' : 'You’re out of credits.'}</h1>
@@ -52,6 +53,12 @@ export default async function CreditsPage() {
       <h2>Buy TinyFish credits for better searches</h2>
       <p>More API credits mean more search volume, more pages read and more agent runs per hunt. Sign up (or log in) on TinyFish, top up there, then paste your key above.</p>
       <a className="primary-button" href={TINYFISH_SIGNUP_URL} {...external}>Get TinyFish API credits</a>
+    </section>
+
+    <section className="content-card" id="activity">
+      <h2>Credit activity</h2>
+      <p>Every charge and refund, newest first. Your balance is always the sum of these.</p>
+      {ledger.length ? <ul className="ledger">{ledger.map(entry => <li key={entry.id}><span>{reasons[entry.reason] ?? entry.reason}</span><span className="muted">{new Date(entry.created_at).toLocaleString()}</span><strong className={entry.delta < 0 ? 'neg' : 'pos'}>{entry.delta > 0 ? '+' : ''}{entry.delta}</strong></li>)}</ul> : <p className="field-hint">No activity yet.</p>}
     </section>
   </>;
 }

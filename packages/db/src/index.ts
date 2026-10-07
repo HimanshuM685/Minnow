@@ -19,7 +19,8 @@ export async function ensureProfile(userId: string, name: string) {
   await ensureSchema();
   const result = await getSql()`WITH p AS (INSERT INTO profiles(user_id, display_name) VALUES(${userId}, ${name}) ON CONFLICT(user_id) DO UPDATE SET display_name = CASE WHEN profiles.display_name = '' THEN EXCLUDED.display_name ELSE profiles.display_name END RETURNING user_id, display_name, profession, headline, created_at, updated_at),
     pr AS (INSERT INTO preferences(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING),
-    w AS (INSERT INTO wallets(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING)
+    w AS (INSERT INTO wallets(user_id) VALUES(${userId}) ON CONFLICT(user_id) DO NOTHING RETURNING user_id, credits),
+    l AS (INSERT INTO credit_ledger(user_id, delta, reason) SELECT user_id, credits, 'signup' FROM w)
     SELECT * FROM p`;
   ensured.set(userId, Date.now() + 600_000);
   return one<ProfileRow>(result);
@@ -28,25 +29,89 @@ export async function getProfile(userId: string) { return one<ProfileRow>(await 
 export const FREE_CREDITS = 10;
 // Server-only: includes the stored TinyFish key. Pages must expose only hasKey.
 export async function getWallet(userId: string) { return one<WalletRow>(await getSql()`SELECT user_id, credits, tinyfish_key, updated_at FROM wallets WHERE user_id=${userId}`); }
-// Atomic: returns remaining credits, or null when the wallet is empty.
+// ---- Credits -------------------------------------------------------------------------------------
+// Every balance change is ONE SQL statement that also writes a credit_ledger row, so the wallet and its history can
+// never disagree (creditAudit proves it). Charges, refunds and top-ups never read-then-write.
 export const DEEP_SEARCH_COST = 2;
-// Atomic: returns remaining credits, or null when the wallet holds fewer than `amount`.
-export async function spendCredits(userId: string, amount: number) { const result = await getSql()`UPDATE wallets SET credits=credits-${amount}, updated_at=now() WHERE user_id=${userId} AND credits>=${amount} RETURNING credits`; return result.length ? Number((result[0] as { credits: number }).credits) : null; }
-export const spendCredit = (userId: string) => spendCredits(userId, 1);
-// Hunts killed mid-run (serverless timeout, crash) stay 'running'. Close them once and refund the credit they charged.
+export const SEARCH_COST = 1;
 export const STALE_HUNT_MINUTES = 6;
-export async function reconcileStaleSearches(userId: string) {
-  const stale = await getSql()`UPDATE searches SET status='error', error='The hunt did not finish (timed out). Your credit was refunded.', finished_at=now() WHERE user_id=${userId} AND status='running' AND created_at < now()-make_interval(mins => ${STALE_HUNT_MINUTES}) RETURNING COALESCE(preference_snapshot->>'credits_charged', CASE WHEN preference_snapshot->>'charged'='true' THEN '1' ELSE '0' END) AS amount`;
-  const refunds = stale.reduce((sum, row) => sum + Number((row as { amount: string }).amount || 0), 0);
-  if (refunds) await addCredits(userId, refunds);
-  return refunds;
+export class SearchConflictError extends Error {}
+
+// Atomic debit. Returns remaining credits, or null when the wallet holds fewer than `amount` (nothing changes).
+export async function spendCredits(userId: string, amount: number, reason = 'search') {
+  const result = await getSql()`WITH w AS (UPDATE wallets SET credits=credits-${amount}, updated_at=now() WHERE user_id=${userId} AND credits>=${amount} RETURNING user_id, credits),
+    l AS (INSERT INTO credit_ledger(user_id,delta,reason) SELECT user_id, ${-amount}, ${reason} FROM w)
+    SELECT credits FROM w`;
+  return result.length ? Number((result[0] as { credits: number }).credits) : null;
 }
+export const spendCredit = (userId: string) => spendCredits(userId, SEARCH_COST);
+// Exact top-up or removal. A removal larger than the balance changes nothing (returns false).
+export async function addCredits(userId: string, amount: number, reason = 'adjustment') {
+  const delta = Math.trunc(amount);
+  if (!delta) return true;
+  const result = await getSql()`WITH w AS (UPDATE wallets SET credits=credits+${delta}, updated_at=now() WHERE user_id=${userId} AND credits+${delta}>=0 RETURNING user_id),
+    l AS (INSERT INTO credit_ledger(user_id,delta,reason) SELECT user_id, ${delta}, ${reason} FROM w)
+    SELECT user_id FROM w`;
+  return result.length > 0;
+}
+
+// Charge and create the search in ONE statement: either both happen or neither (no charge without a hunt, no hunt
+// without a charge). A unique index allows one running hunt per user, so a second click or tab can never double-charge.
+// `requestId` makes a retried click idempotent: it returns the search the first click created.
+export async function startSearch(input: { userId: string; snapshot: Record<string, unknown>; cacheHit: boolean; cost: number; reason: string; requestId?: string }): Promise<{ search: SearchRow; existing: boolean } | null> {
+  if (input.requestId) { const existing = await searchByRequest(input.userId, input.requestId); if (existing) return { search: existing, existing: true }; }
+  const snapshot = JSON.stringify({ ...input.snapshot, credits_charged: input.cost, ...(input.requestId ? { request_id: input.requestId } : {}) });
+  const sql = getSql();
+  try {
+    const rowsOut = input.cost > 0
+      ? await sql`WITH spent AS (UPDATE wallets SET credits=credits-${input.cost}, updated_at=now() WHERE user_id=${input.userId} AND credits>=${input.cost} RETURNING user_id),
+          s AS (INSERT INTO searches(user_id,preference_snapshot,cache_hit) SELECT ${input.userId}, ${snapshot}::jsonb, ${input.cacheHit} FROM spent RETURNING id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at),
+          l AS (INSERT INTO credit_ledger(user_id,delta,reason,search_id) SELECT ${input.userId}, ${-input.cost}, ${input.reason}, s.id FROM s)
+          SELECT * FROM s`
+      : await sql`INSERT INTO searches(user_id,preference_snapshot,cache_hit) VALUES(${input.userId},${snapshot}::jsonb,${input.cacheHit}) RETURNING id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at`;
+    const search = one<SearchRow>(rowsOut);
+    return search ? { search, existing: false } : null; // null = not enough credits
+  } catch (error) {
+    if (!/23505|duplicate key|unique/i.test(String((error as { code?: string }).code ?? '') + String((error as Error).message))) throw error;
+    // The statement rolled back as a whole, so nothing was charged. Either this exact click already created a search, or another hunt is running.
+    const existing = input.requestId ? await searchByRequest(input.userId, input.requestId) : null;
+    if (existing) return { search: existing, existing: true };
+    throw new SearchConflictError('A hunt is already running for your account.');
+  }
+}
+export async function searchByRequest(userId: string, requestId: string) { return one<SearchRow>(await getSql()`SELECT id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at FROM searches WHERE user_id=${userId} AND preference_snapshot->>'request_id'=${requestId}`); }
+
+// Finish a hunt and (optionally) refund what it charged, in one statement. Only the running -> finished transition
+// pays out, so a refund can happen at most once no matter which path (run, stale cleanup, retry) gets there first.
+export async function settleSearch(id: string, status: 'done' | 'error', error: string | null, counts: { search: number; fetch: number; agent: number }, refund: boolean) {
+  const result = await getSql()`WITH s AS (UPDATE searches SET status=${status}, error=${error}, search_count=${counts.search}, fetch_count=${counts.fetch}, agent_count=${counts.agent}, finished_at=now() WHERE id=${id} AND status='running' RETURNING user_id, COALESCE((preference_snapshot->>'credits_charged')::int, CASE WHEN preference_snapshot->>'charged'='true' THEN 1 ELSE 0 END) AS charged),
+    w AS (UPDATE wallets SET credits=credits+s.charged, updated_at=now() FROM s WHERE wallets.user_id=s.user_id AND ${refund}::boolean AND s.charged>0 RETURNING wallets.user_id, s.charged),
+    l AS (INSERT INTO credit_ledger(user_id,delta,reason,search_id) SELECT user_id, charged, 'refund', ${id}::uuid FROM w)
+    SELECT (SELECT count(*) FROM s)::int AS settled, COALESCE((SELECT sum(charged) FROM w),0)::int AS refunded`;
+  const row = result[0] as { settled: number; refunded: number };
+  return { settled: row.settled > 0, refunded: row.refunded };
+}
+
+// Hunts killed mid-run (serverless timeout, crash) stay 'running'. Close them and refund what they charged, once.
+export async function reconcileStaleSearches(userId: string) {
+  const result = await getSql()`WITH s AS (UPDATE searches SET status='error', error='The hunt did not finish (timed out). Your credits were refunded.', finished_at=now() WHERE user_id=${userId} AND status='running' AND created_at < now()-make_interval(mins => ${STALE_HUNT_MINUTES}) RETURNING id, user_id, COALESCE((preference_snapshot->>'credits_charged')::int, CASE WHEN preference_snapshot->>'charged'='true' THEN 1 ELSE 0 END) AS charged),
+    w AS (UPDATE wallets SET credits=credits+(SELECT COALESCE(sum(charged),0) FROM s), updated_at=now() WHERE user_id=${userId} AND EXISTS(SELECT 1 FROM s WHERE charged>0) RETURNING user_id),
+    l AS (INSERT INTO credit_ledger(user_id,delta,reason,search_id) SELECT user_id, charged, 'refund', id FROM s WHERE charged>0)
+    SELECT COALESCE(sum(charged),0)::int AS refunded FROM s`;
+  return Number((result[0] as { refunded: number }).refunded);
+}
+// Balance vs. the sum of its ledger. drift must always be 0.
+export async function creditAudit(userId: string) {
+  const row = one<{ balance: number; ledger: number }>(await getSql()`SELECT w.credits AS balance, COALESCE((SELECT sum(c.delta) FROM credit_ledger c WHERE c.user_id=w.user_id),0)::int AS ledger FROM wallets w WHERE w.user_id=${userId}`);
+  return row ? { balance: Number(row.balance), ledger: Number(row.ledger), drift: Number(row.balance) - Number(row.ledger) } : null;
+}
+export async function creditLedger(userId: string, limit = 50) { return rows<{ id: number; delta: number; reason: string; search_id: string | null; created_at: string }>(await getSql()`SELECT id, delta, reason, search_id, created_at FROM credit_ledger WHERE user_id=${userId} ORDER BY id DESC LIMIT ${limit}`); }
+
 // The user's in-flight hunt, so a returning user (or another tab) can see and follow it.
 export async function runningSearch(userId: string) { return one<{ id: string; deep: boolean; created_at: string }>(await getSql()`SELECT id, COALESCE(preference_snapshot->>'deep','false')='true' AS deep, created_at FROM searches WHERE user_id=${userId} AND status='running' AND created_at >= now()-make_interval(mins => ${STALE_HUNT_MINUTES}) ORDER BY created_at DESC LIMIT 1`); }
 // Latest progress line of a hunt (for background runs the user is not streaming).
 export async function lastSearchProgress(id: string) { const row = one<{ detail: string }>(await getSql()`SELECT detail FROM search_events WHERE search_id=${id} AND host IS NULL ORDER BY id DESC LIMIT 1`); return row?.detail ?? ''; }
 export async function hasRunningSearch(userId: string) { return (await getSql()`SELECT 1 FROM searches WHERE user_id=${userId} AND status='running' AND created_at >= now()-make_interval(mins => ${STALE_HUNT_MINUTES}) LIMIT 1`).length > 0; }
-export async function addCredits(userId: string, amount: number) { await getSql()`UPDATE wallets SET credits=GREATEST(0,credits+${Math.trunc(amount)}), updated_at=now() WHERE user_id=${userId}`; }
 export async function saveTinyfishKey(userId: string, key: string | null) { await getSql()`UPDATE wallets SET tinyfish_key=${key}, updated_at=now() WHERE user_id=${userId}`; }
 export async function getPreferences(userId: string) { return one<PreferenceRow>(await getSql()`SELECT user_id, role, profession, location_label, location_country_code, seniority, work_mode, visa, keywords, filters, updated_at FROM preferences WHERE user_id=${userId}`); }
 export async function savePreferences(userId: string, prefs: Omit<PreferenceRow, 'user_id' | 'updated_at'>) {

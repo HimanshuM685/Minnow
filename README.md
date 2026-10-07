@@ -177,3 +177,21 @@ Run browser tests after building web. For real-branch acceptance, connect Google
 | `AGENT_DURATION_SECONDS` | 30–120, default 120 |
 
 Next.js reads `apps/web/.env.local`, the only env file. There is no root `.env`.
+
+
+## Credits
+
+- Every account gets 10 credits at signup (one ledger row, granted once). Normal Search costs 1, Deep Search costs 2, a cache replay or your own TinyFish key costs 0. The clicked button decides the price on the server.
+- Charging and creating the search is one SQL statement, and every balance change writes a `credit_ledger` row in the same statement, so `creditAudit(userId).drift` is always 0.
+- One running hunt per user is enforced by a unique index, so a double click or a second tab cannot double-charge. A retried click carries a request id and returns the first search instead of charging again.
+- Refunds (failed hunt, no results, hunt killed by a timeout) are part of the statement that finishes the search, so each can pay out at most once.
+
+## How a hunt finds open posts
+
+1. **Search** (TinyFish Search, geo-targeted, two wordings per ATS family for intern and AI roles) discovers job pages. Every hit that is a job page becomes a listing.
+2. **Company board feeds** (TinyFish Fetch reading the public Greenhouse, Lever and Ashby JSON APIs) list each company's open roles with location, posted date and employment type. A Search hit that is missing from its company's feed is treated as closed.
+3. **Fetch** opens company career pages and the top unverified postings to confirm they are open and to read their details.
+4. **Agent** scans JavaScript-only boards, and only when fewer than 6 posts match.
+5. If strict matching leaves fewer than 6 posts, location, employment type and experience are relaxed in that order; every post this adds is labelled "Near match".
+
+`npm run verify:hunt --workspace=@minnow/web` runs four real hunts against TinyFish (uses `TINYFISH_API_KEY` from `apps/web/.env.local`) and fails if any returns fewer than 6 posts.
