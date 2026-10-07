@@ -2,7 +2,6 @@ import Link from 'next/link';
 import { searchHistory } from '@minnow/db';
 import { requireUser } from '@/lib/auth/session';
 import { dropLines, searchSummary, searchTitle } from '@/lib/search-label';
-export const dynamic = 'force-dynamic';
 
 // Every search is stored in Neon (searches + listings) and listed here, including ones that found nothing.
 export default async function SearchesPage() {

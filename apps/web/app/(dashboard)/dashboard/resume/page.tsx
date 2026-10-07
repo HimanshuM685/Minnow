@@ -2,7 +2,6 @@ import { getResume } from '@minnow/db';
 import { requireUser } from '@/lib/auth/session';
 import { resumeSkills } from '@/lib/resume';
 import { ResumeUpload } from '@/components/resume-upload';
-export const dynamic = 'force-dynamic';
 export default async function ResumePage() {
   const user = await requireUser(); const resume = await getResume(user.id);
   const skills = resume ? resumeSkills(resume.extracted_text) : [];

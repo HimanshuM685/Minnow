@@ -94,3 +94,7 @@ input[type=checkbox]{width:16px;height:16px;min-height:0;accent-color:var(--acce
 .spin{animation:spin 1.2s linear infinite}
 @media(max-width:700px){.job-card{flex-wrap:wrap;padding:18px}.job-main{width:calc(100% - 60px)}.job-actions{flex-direction:row;width:100%;align-items:center}.site-footer{flex-direction:column;align-items:flex-start}.header-inner{gap:12px;padding:0 16px}.public-nav{gap:2px;font-size:13px}.public-nav>a,.nav-signout-btn{padding:8px}.page-width{padding-inline:16px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.001ms!important;transition-duration:.001ms!important;scroll-behavior:auto!important}}
+
+/* Web guidelines: balanced headings, aligned numbers */
+h1,h2,h3{text-wrap:balance}
+.nav-credits,td,th{font-variant-numeric:tabular-nums}

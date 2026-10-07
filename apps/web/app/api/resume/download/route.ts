@@ -1,6 +1,8 @@
 import { downloadResume } from '@minnow/db';
+import { connection } from 'next/server';
 import { auth } from '@/lib/auth/server';
 export async function GET() {
+  await connection();
   const { data: session } = await auth.getSession();
   if (!session?.user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
   const resume = await downloadResume(session.user.id);

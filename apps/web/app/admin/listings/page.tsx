@@ -2,7 +2,6 @@ import { listListings } from '@minnow/db';
 import { requireAdmin } from '@/lib/auth/admin';
 import { Empty, Pagination, pageNumber, date } from '@/lib/admin/ui';
 import { setListingVisibility } from '../actions';
-export const dynamic = 'force-dynamic';
 export default async function Listings({ searchParams }: { searchParams: Promise<{ page?: string; company?: string; source?: string; location?: string; hidden?: string }> }) {
   await requireAdmin();
   const filters = await searchParams;

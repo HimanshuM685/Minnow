@@ -6,7 +6,6 @@ import { hasGoogleAccount } from '@minnow/db';
 import { GoogleAccount } from '@/components/google-account';
 import { ProfileForm } from '@/components/profile-form';
 import { oauthError } from '@/lib/auth/errors';
-export const dynamic = 'force-dynamic';
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ error?: string | string[]; linkGoogle?: string }> }) {
   const user = await requireUser();
   const [profile, accounts, params] = await Promise.all([getProfile(user.id), auth.listAccounts(), searchParams]);

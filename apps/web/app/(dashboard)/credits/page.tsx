@@ -4,7 +4,6 @@ import { requireUser } from '@/lib/auth/session';
 import { currentWallet } from '@/lib/wallet';
 import { TELEGRAM_HANDLE, TELEGRAM_URL, TINYFISH_SIGNUP_URL } from '@/lib/links';
 import { TinyfishKeyForm } from '@/components/tinyfish-key-form';
-export const dynamic = 'force-dynamic';
 const reasons: Record<string, string> = { signup: 'Welcome credits', opening_balance: 'Opening balance', search: 'Search', deep_search: 'Deep Search', refund: 'Refund', admin: 'Added by Minnow', adjustment: 'Adjustment' };
 const external = { target: '_blank', rel: 'noopener noreferrer' } as const;
 export default async function CreditsPage() {

@@ -5,7 +5,6 @@ import { requireUser } from '@/lib/auth/session';
 import { HuntForm } from '@/components/hunt-form';
 import { resumeSkills } from '@/lib/resume';
 const blank = (user_id: string): PreferenceRow => ({ user_id, role: '', profession: '', location_label: '', location_country_code: '', seniority: 'any', work_mode: 'any', visa: 'any', keywords: [], filters: {}, updated_at: '' });
-export const dynamic = 'force-dynamic';
 export default async function HuntPage({ searchParams }: { searchParams: Promise<{ deep?: string; from?: string }> }) {
   const user = await requireUser();
   const params = await searchParams;

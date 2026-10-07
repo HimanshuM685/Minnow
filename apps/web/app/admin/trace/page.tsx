@@ -2,7 +2,6 @@ import { getSearch, getSearchEvents } from '@minnow/db';
 import { requireAdmin } from '@/lib/auth/admin';
 import { TraceTimeline } from '@/components/admin/trace';
 import { isUuid } from '@/lib/admin/ui';
-export const dynamic = 'force-dynamic';
 export default async function Trace({ searchParams }: { searchParams: Promise<{ id?: string }> }) {
   await requireAdmin();
   const { id } = await searchParams;

@@ -3,7 +3,6 @@ import { getSearch, getSearchListings, lastSearchProgress, searchByRequest } fro
 import { getUser } from '@/lib/auth/session';
 import { HuntBusyError, HuntCreditError, HuntInputError, prepareHunt, runHunt } from '@/lib/hunt';
 
-export const runtime='nodejs';
 export const maxDuration=300;
 const HARD_LIMIT_MS=280_000;
 const UUID=/^[0-9a-f-]{36}$/i;

@@ -3,7 +3,6 @@ import { bestMatches, getSearch, getSearchListings, latestSearch, latestSearchWi
 import { requireUser } from '@/lib/auth/session';
 import { JobCard } from '@/components/job-card';
 import { dropLines, searchSummary, searchTitle } from '@/lib/search-label';
-export const dynamic = 'force-dynamic';
 const isId = (value?: string) => !!value && /^[0-9a-f-]{36}$/i.test(value);
 const when = (value: string) => new Date(value).toLocaleString();
 

@@ -1,15 +1,16 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { currentWallet } from '@/lib/wallet';
 import { requireUser } from '@/lib/auth/session';
 import { signOut } from '@/app/auth/actions';
 import { AppSidebar } from '@/components/app-sidebar';
 import { Fish } from '@/components/brand';
+import Loading from './loading';
 import '../product.css';
 import '../globals.css';
-export const dynamic = 'force-dynamic';
 
 // Dashboard shell: its own header and sidebar, separate from the marketing layout in (site).
-export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+async function Shell({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
   const wallet = await currentWallet(user);
   return <>
@@ -28,4 +29,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <main className="app-content" id="main">{children}</main>
     </div>
   </>;
+}
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<div className="page-width"><Loading /></div>}><Shell>{children}</Shell></Suspense>;
 }

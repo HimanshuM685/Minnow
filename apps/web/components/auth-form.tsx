@@ -23,7 +23,7 @@ export function AuthForm({ google, next, oauthError }: { google: boolean; next: 
     <form action={signInAction} className="email-auth-form">
       <input name="next" type="hidden" value={next} />
       <label>Name <small>(new accounts only)</small><input name="name" autoComplete="name" maxLength={120} /></label>
-      <label>Email<input name="email" type="email" autoComplete="email" required /></label>
+      <label>Email<input name="email" type="email" autoComplete="email" spellCheck={false} required /></label>
       <label>Password<input name="password" type="password" autoComplete="current-password" required /></label>
       {error && <div className="form-error" role="alert">{error}</div>}
       <button className={google ? 'secondary-button' : 'primary-button'} disabled={signInPending || signUpPending}>{signInPending ? 'Connecting…' : 'Continue'}</button>

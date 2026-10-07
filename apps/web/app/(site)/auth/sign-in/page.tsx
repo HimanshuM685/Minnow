@@ -3,7 +3,6 @@ import { AuthForm } from '@/components/auth-form';
 import { oauthError } from '@/lib/auth/errors';
 import { safeNext } from '@/lib/auth/next';
 import { getUser } from '@/lib/auth/session';
-export const dynamic = 'force-dynamic';
 export default async function SignInPage({ searchParams }: { searchParams: Promise<{ next?: string; error?: string | string[] }> }) {
   const params = await searchParams;
   const next = safeNext(params.next);
