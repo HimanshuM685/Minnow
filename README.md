@@ -28,7 +28,7 @@ TINYFISH_API_KEY=your-tinyfish-key
 OBSERVATORY_ADMIN_EMAILS=you@example.com
 NEON_AUTH_GOOGLE_ENABLED=true
 MAX_AGENT_RUNS=2
-AGENT_DURATION_SECONDS=120
+CRON_SECRET=your-random-cron-bearer-secret
 ```
 
 Get the Auth URL from **Neon Console → Project → Branch → Auth → Configuration**. Get the pooled Postgres URL from the branch connection dialog. Setup generates missing secrets. If configuring manually, generate random values with:
@@ -80,10 +80,10 @@ Open **http://localhost:3000**. The app uses Next.js **16.3.8** and Neon’s ses
 | `/` | Static landing with a clearly labelled illustrative sample; no listing/database fetch |
 | `/auth/sign-up`, `/auth/sign-in` | Google-first custom auth with an email/password alternative |
 | `/auth/complete` | Managed OAuth completion and validated same-app admin return |
-| `/app` | Saved role, profession, location, country, seniority, work mode, visa and keywords; live hunt progress |
-| `/app/listings` | Latest completed ranked shortlist; hidden rows omitted; real Apply links and new-since-last-hunt marks |
-| `/app/resume` | Upload or replace PDF/DOCX/TXT, inspect extracted skill hints, download your own file |
-| `/app/settings` | Profile, connected Google sign-in and sign-out |
+| `/dashboard` | Saved role, profession, location, country, seniority, work mode, visa and keywords; live hunt progress |
+| `/dashboard/listings` | Latest completed ranked shortlist; hidden rows omitted; real Apply links and new-since-last-hunt marks |
+| `/dashboard/resume` | Upload or replace PDF/DOCX/TXT, inspect extracted skill hints, download your own file |
+| `/dashboard/settings` | Profile, connected Google sign-in and sign-out |
 | `/admin` | Overview; nested Hunts, Listings, Sources, People and Trace routes |
 
 Preferences are stored in Neon, not localStorage. Resume bytes are capped at **2 MB** and stored as `bytea` with extracted text. PDF and DOCX are parsed on the web server. Raw files are never sent to TinyFish. Recognized resume skills boost ranking and can be added as explicit keyword hints. Download queries always use the authenticated user ID.
@@ -96,7 +96,7 @@ saved preferences + resume skill hints
   → diversify sources; remove irrelevant/login/skipped hosts
   → one fresh Fetch batch (up to 10 selected URLs)
   → parse structured detail or board listings
-  → Agent only for eligible thin/unreadable pages (max 2)
+  → durable async Agent runs only for eligible thin/unreadable pages (max 2)
   → normalize → dedupe → filter → rank
   → persist trace and shortlist → completed UI with endpoint counts
 ```
@@ -105,7 +105,7 @@ saved preferences + resume skill hints
 | --- | --- |
 | **Search** — `GET https://api.search.tinyfish.ai` | Discovers live application pages with `query`, `purpose`, country-level `location`, and `include_domains`. Source families include company careers, Greenhouse, Lever, Ashby and public boards. Known location aliases drive automatic geo-targeting. |
 | **Fetch** — `POST https://api.fetch.tinyfish.ai` | Reads a diversified batch of at most 10 pages as markdown with links and **`ttl: 0`**. Extracts real titles, employers, locations and application URLs. Per-URL failures remain in the trace without discarding successful pages. |
-| **Agent** — `POST https://agent.tinyfish.ai/v1/automation/run-sse` | Navigates eligible interactive/empty boards, applies filters and returns up to 15 openings through a supported structured-output schema. Maximum two attempts per hunt; default 120-second duration limit; upstream runs are cancelled on disconnect/timeout. Readable Search/Fetch results survive Agent errors. |
+| **Agent** — `POST https://agent.tinyfish.ai/v1/automation/run-async` + `GET /v1/runs/{id}` | Navigates eligible interactive/empty boards, applies filters and returns up to 15 openings through a supported structured-output schema. Runs are launched once, persisted in Neon, and polled by durable Workflow steps. Closing the browser stops observation only; started upstream runs are never cancelled. |
 
 Canonical URLs and ATS job IDs drive deduplication, with company/title/location fallback identity. Known seniority and work-mode mismatches are removed. Role relevance, geographic eligibility, keywords, resume skills, source quality and sponsorship signals determine rank. Visa is a **soft ranking preference**: explicit no-sponsorship postings rank lower and are clearly labelled; unstated sponsorship is not guessed. Application-form sponsorship questions do not count as positive evidence.
 
@@ -149,9 +149,9 @@ Start the production app:
 npm run start --workspace=@minnow/web
 ```
 
-Deploy `apps/web` on a Next.js Node runtime. The host must permit streaming hunt requests up to **300 seconds**. Keep database, Auth cookie, TinyFish and admin-key configuration server-side.
+Deploy `apps/web` on Vercel with the Workflow SDK enabled. Workflow-generated flow/webhook routes provide durable execution; the normal hunt POST only enqueues a job and returns **202**. Vercel System Environment Variables must be enabled for Workflow runtime identity, and the project must support the configured five-minute cron. Set `CRON_SECRET` to a random server-only value so `/api/internal/hunts` can recover jobs whose workflow acknowledgement was lost. Keep database, Auth cookie, TinyFish, cron and admin-key configuration server-side.
 
-Tests include parsing, canonicalization, dedupe, location restrictions, sponsorship evidence, resume-token ranking, source skipping, TinyFish failure/cancellation handling, and actual SQL round-trips through the Neon driver against an isolated PostgreSQL-compatible PGlite database. The web hunt orchestrator is tested through successful persistence, zero-call cache replay and failed TinyFish authentication with retained traces. PDF/DOCX/TXT extraction tests use real document bytes. They do not claim a live Neon branch was exercised.
+Tests include parsing, canonicalization, dedupe, location restrictions, sponsorship evidence, resume-token ranking, source skipping, TinyFish failure/cancellation handling, async Agent recovery and actual SQL round-trips through the Neon driver against an isolated PostgreSQL-compatible PGlite database. The durable hunt path is tested through atomic outbox persistence, guarded recovery/refunds, successful result persistence, zero-call cache replay and failed TinyFish authentication with retained traces. PDF/DOCX/TXT extraction tests use real document bytes. They do not claim a live Neon branch was exercised.
 
 Browser route checks use nonfunctional build/test-only Auth configuration, verifying public landing, labelled samples, Google/email auth errors, linking recovery messages, protected routes, unauthorized APIs, strict admin 404s, and signed admin-login continuations:
 
@@ -174,7 +174,7 @@ Run browser tests after building web. For real-branch acceptance, connect Google
 | `TINYFISH_API_KEY` | Required for live hunts |
 | `NEON_AUTH_GOOGLE_ENABLED` | True after enabling Google on the branch |
 | `MAX_AGENT_RUNS` | 0–2, default 2 |
-| `AGENT_DURATION_SECONDS` | 30–120, default 120 |
+| `CRON_SECRET` | Bearer secret for the five-minute durable-hunt recovery cron |
 
 Next.js reads `apps/web/.env.local`, the only env file. There is no root `.env`.
 
@@ -184,7 +184,9 @@ Next.js reads `apps/web/.env.local`, the only env file. There is no root `.env`.
 - Every account gets 10 credits at signup (one ledger row, granted once). Normal Search costs 1, Deep Search costs 2, a cache replay or your own TinyFish key costs 0. The clicked button decides the price on the server.
 - Charging and creating the search is one SQL statement, and every balance change writes a `credit_ledger` row in the same statement, so `creditAudit(userId).drift` is always 0.
 - One running hunt per user is enforced by a unique index, so a double click or a second tab cannot double-charge. A retried click carries a request id and returns the first search instead of charging again.
-- Refunds (failed hunt, no results, hunt killed by a timeout) are part of the statement that finishes the search, so each can pay out at most once.
+- Refunds (failed hunt or no results) are part of the statement that finishes the search, so each can pay out at most once.
+- A hunt outbox row is committed atomically with billing. Workflow checkpoints hold discovery results; Agent launch markers and upstream run IDs are persisted so retries recover an accepted launch instead of submitting it twice.
+- The browser observes `GET /api/hunt?id=...`; it does not own execution. A closed tab, navigation, observer timeout or transient status failure cannot cancel the workflow or TinyFish Agent. Recovery runs from the Vercel Workflow queue and the five-minute cron.
 
 ## How a hunt finds open posts
 

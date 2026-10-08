@@ -18,7 +18,7 @@ let failed = 0;
 for (const testCase of cases) {
   const started = Date.now();
   const prefs = { ...defaultPreferences, ...testCase.prefs, filters: normalizeFilters(testCase.filters ?? {}) } as Preferences;
-  const result = await runSearch(prefs, 'verify', key, AbortSignal.timeout(170_000), () => {}, { maxAgentRuns: 2, agentDuration: 60, budgetMs: 150_000, stats: emptyStats() });
+  const result = await runSearch(prefs, 'verify', key, new AbortController().signal, () => {}, { maxAgentRuns: 2, agentDuration: 0, budgetMs: 150_000, stats: emptyStats() });
   const ok = result.listings.length >= 6;
   if (!ok) failed++;
   console.log(`\n${ok ? 'PASS' : 'FAIL'}  ${testCase.name}: ${result.listings.length} posts (${result.strict} strict, ${result.near} near, relaxed: ${result.relaxed.join(',') || 'none'}) in ${Math.round((Date.now() - started) / 1000)}s · search ${result.stats.searchRequests} fetch ${result.stats.fetchRequests} agent ${result.stats.agentRuns}`);

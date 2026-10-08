@@ -1,16 +1,14 @@
 'use client';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Search, RefreshCw, LoaderCircle, Check, Sparkles } from 'lucide-react';
 import type { PreferenceRow, SearchRow } from '@minnow/db/types';
-import { readSSE } from '@minnow/core/sse';
+import { followHunt, observationDelay, type HuntStatus } from '@/lib/hunt-observer';
 import { activeDrawerCount, normalizeFilters, type HuntFilters } from '@minnow/core/filters';
 import { PROFESSIONS, SKILLS } from '@/lib/suggestions';
 import { TELEGRAM_HANDLE, TELEGRAM_URL } from '@/lib/links';
 import { savePreferences } from '@/app/(dashboard)/dashboard/actions';
-// An error reported by the server (final), as opposed to a dropped connection (recoverable).
-class HuntFailed extends Error {}
 // Used only to prefill an empty country from the browser time zone; the user can change it.
 const ZONES: Record<string, string> = { 'Asia/Kolkata': 'IN', 'Asia/Calcutta': 'IN', 'Europe/London': 'GB', 'Europe/Berlin': 'DE', 'Europe/Paris': 'FR', 'Asia/Singapore': 'SG', 'Australia/Sydney': 'AU', 'Australia/Melbourne': 'AU', 'America/Toronto': 'CA', 'America/Vancouver': 'CA', 'America/New_York': 'US', 'America/Chicago': 'US', 'America/Denver': 'US', 'America/Los_Angeles': 'US' };
 const COUNTRIES = [['IN', 'India'], ['US', 'United States'], ['GB', 'United Kingdom'], ['CA', 'Canada'], ['DE', 'Germany'], ['FR', 'France'], ['SG', 'Singapore'], ['AU', 'Australia']];
@@ -67,83 +65,50 @@ export function HuntForm({ initial, skills, latest, configured, credits, deepDef
     catch { setError('Could not save preferences. Check the database connection.'); return false; }
     finally { setSaving(false); }
   }
-  type HuntEvent = { type: string; stage?: string; message?: string; counts?: typeof counts; searchId?: string; found?: number; strict?: number; near?: number; relaxed?: string[]; dropped?: { filter: string; count: number }[] };
   const finish = (next: { counts: typeof counts; found?: number; strict?: number; near?: number; relaxed?: string[]; dropped?: { filter: string; count: number }[] }) => {
     setCounts(next.counts); setStage('done');
     setMessage(next.found === 0 ? (next.dropped?.length ? `Nothing was left after your hard filters: ${next.dropped.map(item => `${item.filter} removed ${item.count}`).join(', ')}. Nothing was widened. Loosen one and run again. This hunt was not charged.` : 'No matching openings were found this time. This hunt was not charged. Try a broader role or location.') : next.near ? `${next.strict ?? 0} strict match${next.strict === 1 ? '' : 'es'} and ${next.near} near match${next.near === 1 ? '' : 'es'} (${(next.relaxed ?? []).join(', ')} relaxed, each one is labelled). Your shortlist is ready.` : 'Your shortlist is ready.');
   };
-  // Follows a hunt by id: used when the stream drops, for Deep Search (which runs in the background), and when a
-  // returning user already has a hunt running.
-  async function waitForHunt(searchId: string, intro = 'Connection interrupted. Checking your hunt…') {
-    setMessage(intro);
-    for (let i = 0; i < 200; i++) {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      try {
-        const response = await fetch(`/api/hunt?id=${searchId}`, { cache: 'no-store' });
-        if (response.status === 401) throw new Error('Your session expired. Sign in again.');
-        if (!response.ok) continue;
-        const run = await response.json() as { status: string; error?: string; found: number; progress?: string; counts: NonNullable<typeof counts> };
-        if (run.status === 'done') { finish({ counts: run.counts, found: run.found }); return; }
-        if (run.status === 'error') throw new HuntFailed(run.error ?? 'The hunt could not finish.');
-        if (run.progress) setMessage(run.progress);
-      } catch (e) { if (e instanceof HuntFailed || (e instanceof Error && e.message.startsWith('Your session'))) throw e; }
-    }
-    throw new Error('The hunt is still running. Check your Shortlist in a minute; you will not be charged twice.');
-  }
-  // Resume following a hunt that is already running (another tab, or a Deep Search started earlier).
-  useEffect(() => {
-    if (!activeRun) return;
-    let cancelled = false;
-    setBusy(true); setStage('search');
-    waitForHunt(activeRun.id, activeRun.deep ? 'Deep Search is running on our servers. You can leave this page.' : 'A hunt is in progress…')
-      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Hunt failed.'); })
-      .finally(() => { if (!cancelled) { setBusy(false); router.refresh(); } });
-    return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [following,setFollowing]=useState(activeRun?.id??'');
+  const completed=useRef(new Set<string>());
+  const mounted=useRef(true);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  useEffect(()=>{if(activeRun && !completed.current.has(activeRun.id)) setFollowing(activeRun.id);},[activeRun?.id]);
+  useEffect(()=>{
+    if(!following) return;
+    const observer=new AbortController();
+    setBusy(true);setStage('search');setMessage('Your hunt is running on our servers. You can close this page and return later.');
+    followHunt(following,observer.signal,(status:HuntStatus)=>{
+      if(status.status==='done') finish(status);
+      else if(status.status==='error') {setError(status.error??'The hunt could not finish.');setStage('');setMessage('');}
+      else {setStage(status.stage??'search');if(status.progress)setMessage(status.progress);}
+    }).catch(error=>{if(!observer.signal.aborted)setError(error instanceof Error?error.message:'Could not follow the hunt.');})
+      .finally(()=>{if(!observer.signal.aborted){completed.current.add(following);setFollowing('');setBusy(false);router.refresh();}});
+    return()=>observer.abort(); // stop status reads only; never stop a workflow or Agent
+  },[following]); // eslint-disable-line react-hooks/exhaustive-deps
   async function run(refresh: boolean) {
     setBusy(true); setError(''); setCounts(null); setStage('search'); setMessage('Searching live careers pages…');
-    let searchId = '';
     // One id per click: if the response is lost and we retry, the server returns the first attempt instead of charging again.
     const requestId = crypto.randomUUID();
     try {
       let response: Response;
-      try { response = await fetch('/api/hunt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh, form: prefs(), deep, requestId }) }); }
+      try { response = await fetch('/api/hunt', { method: 'POST', keepalive:true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh, form: prefs(), deep, requestId }) }); }
       catch {
         // The request may have reached the server even though the response was lost: ask before giving up.
         for (let attempt = 0; attempt < 4; attempt++) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
+          if(!mounted.current)return;
+          await observationDelay(1500,new AbortController().signal);
           try {
             const check = await fetch(`/api/hunt?request=${requestId}`, { cache: 'no-store' });
-            if (check.ok) { const found = await check.json() as { searchId: string }; await waitForHunt(found.searchId, 'Reconnected. Your search is running…'); return; }
+            if (check.ok) { const found = await check.json() as { searchId: string }; if(mounted.current)setFollowing(found.searchId); return; }
           } catch { /* still offline */ }
         }
-        throw new Error('Could not reach Minnow. Check your connection and try again. Nothing was charged.');
+        throw new Error('The start response was lost. Your hunt may already be queued; reopen your dashboard to check before starting another.');
       }
       if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new Error(body.error ?? `The server returned ${response.status}. Please try again.`); }
-      if (response.headers.get('content-type')?.includes('application/json')) {
-        // Deep Search (or a retried click) answers immediately and keeps working on the server, so the user may leave this page.
-        const started = await response.json() as { searchId: string; duplicate?: boolean };
-        router.refresh(); // the 2 credits are already spent
-        await waitForHunt(started.searchId, 'Deep Search is running on our servers. You can leave this page; your shortlist will be waiting.');
-        return;
-      }
-      if (!response.body) throw new Error('No progress stream received.');
-      let done = false;
-      try {
-        for await (const raw of readSSE(response.body)) {
-          const event = raw as HuntEvent;
-          if (event.type === 'started') searchId = event.searchId ?? '';
-          if (event.type === 'progress') { setStage(event.stage ?? ''); setMessage(event.message ?? ''); }
-          if (event.type === 'error') throw new HuntFailed(event.message ?? 'The hunt could not finish.');
-          if (event.type === 'complete') { done = true; finish({ counts: event.counts ?? null, found: event.found, strict: event.strict, near: event.near, relaxed: event.relaxed, dropped: event.dropped }); break; }
-        }
-      } catch (e) { if (e instanceof HuntFailed) throw e; /* otherwise the connection dropped */ }
-      if (!done) {
-        if (!searchId) throw new Error('The connection closed before the hunt started. Nothing was charged. Please try again.');
-        await waitForHunt(searchId);
-      }
-    } catch (e) { setError(e instanceof Error ? e.message : 'Hunt failed.'); setStage(''); setMessage(''); }
-    finally { setBusy(false); router.refresh(); }
+      const started=await response.json() as {searchId:string};
+      if(mounted.current){setFollowing(started.searchId);router.refresh();}
+    } catch (e) { if(mounted.current){setError(e instanceof Error ? e.message : 'Hunt failed.');setBusy(false);setStage('');setMessage('');router.refresh();} }
   }
   const isFirstTime = !latest && !initial.role;
   return (
@@ -268,4 +233,3 @@ export function HuntForm({ initial, skills, latest, configured, credits, deepDef
     </>
   );
 }
-

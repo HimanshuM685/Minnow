@@ -81,7 +81,7 @@ test('intern search reads company ATS feeds, returns 6+ open posts, drops closed
   const fetchMock = mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith('https://api.search.')) return Response.json({ results: [...tokens.map((token, i) => ({ url: gh(token, 1000 + i * 10), title: `Software Engineer, Intern (Summer 2027)`, snippet: 'Apply for this internship.' })), { url: gh('co0', 999), title: 'Software Engineer Intern', snippet: 'a closed posting' }] });
-    if (url.includes('run-sse')) { agentCalls++; throw new Error('agents must not run when 6 strong matches exist'); }
+    if (url.includes('run-async')) { agentCalls++; throw new Error('agents must not run when 6 strong matches exist'); }
     const body = JSON.parse(String(init?.body)) as { urls: string[] };
     calls.push(body.urls);
     return Response.json({ results: body.urls.map(source => { const token = /boards\/([^/]+)\/jobs/.exec(source)?.[1] ?? 'co0'; return { url: source, title: null, text: feed(token.toUpperCase(), 1000 + Number(token.slice(2)) * 10) }; }), errors: [] });

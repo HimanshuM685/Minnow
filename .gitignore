@@ -11,3 +11,5 @@ test-results/
 .next/
 *.tsbuildinfo
 next-env.d.ts
+.workflow-data/
+apps/web/app/.well-known/workflow/

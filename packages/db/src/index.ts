@@ -5,6 +5,7 @@ export { getSql } from './client';
 export { ensureSchema } from './schema';
 import { ensureSchema } from './schema';
 export { isAdminEmail, hasGoogleAccount } from './access';
+export * from './jobs';
 
 const normalizeRow = (row: unknown) => Object.fromEntries(Object.entries(row as Record<string,unknown>).map(([key,value])=>[key,value instanceof Date ? value.toISOString() : key==='score' ? Number(value) : value]));
 const one = <T>(rows: unknown[]) => rows.length ? normalizeRow(rows[0]) as T : null;
@@ -58,7 +59,7 @@ export async function addCredits(userId: string, amount: number, reason = 'adjus
 // Charge and create the search in ONE statement: either both happen or neither (no charge without a hunt, no hunt
 // without a charge). A unique index allows one running hunt per user, so a second click or tab can never double-charge.
 // `requestId` makes a retried click idempotent: it returns the search the first click created.
-export async function startSearch(input: { userId: string; snapshot: Record<string, unknown>; cacheHit: boolean; cost: number; reason: string; requestId?: string }): Promise<{ search: SearchRow; existing: boolean } | null> {
+export async function startSearch(input: { userId: string; snapshot: Record<string, unknown>; cacheHit: boolean; cost: number; reason: string; requestId?: string; job?: Record<string, unknown> }): Promise<{ search: SearchRow; existing: boolean } | null> {
   if (input.requestId) { const existing = await searchByRequest(input.userId, input.requestId); if (existing) return { search: existing, existing: true }; }
   const snapshot = JSON.stringify({ ...input.snapshot, credits_charged: input.cost, ...(input.requestId ? { request_id: input.requestId } : {}) });
   const sql = getSql();
@@ -66,9 +67,15 @@ export async function startSearch(input: { userId: string; snapshot: Record<stri
     const rowsOut = input.cost > 0
       ? await sql`WITH spent AS (UPDATE wallets SET credits=credits-${input.cost}, updated_at=now() WHERE user_id=${input.userId} AND credits>=${input.cost} RETURNING user_id),
           s AS (INSERT INTO searches(user_id,preference_snapshot,cache_hit) SELECT ${input.userId}, ${snapshot}::jsonb, ${input.cacheHit} FROM spent RETURNING id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at),
-          l AS (INSERT INTO credit_ledger(user_id,delta,reason,search_id) SELECT ${input.userId}, ${-input.cost}, ${input.reason}, s.id FROM s)
+          l AS (INSERT INTO credit_ledger(user_id,delta,reason,search_id) SELECT ${input.userId}, ${-input.cost}, ${input.reason}, s.id FROM s),
+          j AS (INSERT INTO hunt_jobs(search_id,payload) SELECT id,${JSON.stringify(input.job ?? null)}::jsonb FROM s WHERE ${Boolean(input.job)})
           SELECT * FROM s`
-      : await sql`INSERT INTO searches(user_id,preference_snapshot,cache_hit) VALUES(${input.userId},${snapshot}::jsonb,${input.cacheHit}) RETURNING id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at`;
+      : input.job?.useOwnKey === true
+        ? await sql`WITH w AS (SELECT user_id FROM wallets WHERE user_id=${input.userId} AND tinyfish_key IS NOT NULL FOR UPDATE),
+            s AS (INSERT INTO searches(user_id,preference_snapshot,cache_hit) SELECT ${input.userId},${snapshot}::jsonb,${input.cacheHit} FROM w RETURNING id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at),
+            j AS (INSERT INTO hunt_jobs(search_id,payload) SELECT id,${JSON.stringify(input.job)}::jsonb FROM s) SELECT * FROM s`
+        : await sql`WITH s AS (INSERT INTO searches(user_id,preference_snapshot,cache_hit) VALUES(${input.userId},${snapshot}::jsonb,${input.cacheHit}) RETURNING id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at),
+            j AS (INSERT INTO hunt_jobs(search_id,payload) SELECT id,${JSON.stringify(input.job ?? null)}::jsonb FROM s WHERE ${Boolean(input.job)}) SELECT * FROM s`;
     const search = one<SearchRow>(rowsOut);
     return search ? { search, existing: false } : null; // null = not enough credits
   } catch (error) {
@@ -94,7 +101,8 @@ export async function settleSearch(id: string, status: 'done' | 'error', error: 
 
 // Hunts killed mid-run (serverless timeout, crash) stay 'running'. Close them and refund what they charged, once.
 export async function reconcileStaleSearches(userId: string) {
-  const result = await getSql()`WITH s AS (UPDATE searches SET status='error', error='The hunt did not finish (timed out). Your credits were refunded.', finished_at=now() WHERE user_id=${userId} AND status='running' AND created_at < now()-make_interval(mins => ${STALE_HUNT_MINUTES}) RETURNING id, user_id, COALESCE((preference_snapshot->>'credits_charged')::int, CASE WHEN preference_snapshot->>'charged'='true' THEN 1 ELSE 0 END) AS charged),
+  // Only pre-workflow legacy hunts can be closed by age. Durable jobs are reconciled against their workflow state.
+  const result = await getSql()`WITH s AS (UPDATE searches SET status='error', error='The legacy hunt did not finish. Your credits were refunded.', finished_at=now() WHERE user_id=${userId} AND status='running' AND NOT EXISTS(SELECT 1 FROM hunt_jobs j WHERE j.search_id=searches.id) AND created_at < now()-make_interval(mins => ${STALE_HUNT_MINUTES}) RETURNING id, user_id, COALESCE((preference_snapshot->>'credits_charged')::int, CASE WHEN preference_snapshot->>'charged'='true' THEN 1 ELSE 0 END) AS charged),
     w AS (UPDATE wallets SET credits=credits+(SELECT COALESCE(sum(charged),0) FROM s), updated_at=now() WHERE user_id=${userId} AND EXISTS(SELECT 1 FROM s WHERE charged>0) RETURNING user_id),
     l AS (INSERT INTO credit_ledger(user_id,delta,reason,search_id) SELECT user_id, charged, 'refund', id FROM s WHERE charged>0)
     SELECT COALESCE(sum(charged),0)::int AS refunded FROM s`;
@@ -108,11 +116,16 @@ export async function creditAudit(userId: string) {
 export async function creditLedger(userId: string, limit = 50) { return rows<{ id: number; delta: number; reason: string; search_id: string | null; created_at: string }>(await getSql()`SELECT id, delta, reason, search_id, created_at FROM credit_ledger WHERE user_id=${userId} ORDER BY id DESC LIMIT ${limit}`); }
 
 // The user's in-flight hunt, so a returning user (or another tab) can see and follow it.
-export async function runningSearch(userId: string) { return one<{ id: string; deep: boolean; created_at: string }>(await getSql()`SELECT id, COALESCE(preference_snapshot->>'deep','false')='true' AS deep, created_at FROM searches WHERE user_id=${userId} AND status='running' AND created_at >= now()-make_interval(mins => ${STALE_HUNT_MINUTES}) ORDER BY created_at DESC LIMIT 1`); }
+export async function runningSearch(userId: string) { return one<{ id: string; deep: boolean; created_at: string }>(await getSql()`SELECT id, COALESCE(preference_snapshot->>'deep','false')='true' AS deep, created_at FROM searches WHERE user_id=${userId} AND status='running' ORDER BY created_at DESC LIMIT 1`); }
 // Latest progress line of a hunt (for background runs the user is not streaming).
-export async function lastSearchProgress(id: string) { const row = one<{ detail: string }>(await getSql()`SELECT detail FROM search_events WHERE search_id=${id} AND host IS NULL ORDER BY id DESC LIMIT 1`); return row?.detail ?? ''; }
-export async function hasRunningSearch(userId: string) { return (await getSql()`SELECT 1 FROM searches WHERE user_id=${userId} AND status='running' AND created_at >= now()-make_interval(mins => ${STALE_HUNT_MINUTES}) LIMIT 1`).length > 0; }
-export async function saveTinyfishKey(userId: string, key: string | null) { await getSql()`UPDATE wallets SET tinyfish_key=${key}, updated_at=now() WHERE user_id=${userId}`; }
+export async function latestSearchProgress(id: string) { return one<{ detail: string; step: SearchEventRow['step'] }>(await getSql()`SELECT detail,step FROM search_events WHERE search_id=${id} AND host IS NULL ORDER BY id DESC LIMIT 1`); }
+export async function lastSearchProgress(id: string) { return (await latestSearchProgress(id))?.detail ?? ''; }
+export async function hasRunningSearch(userId: string) { return (await getSql()`SELECT 1 FROM searches WHERE user_id=${userId} AND status='running' LIMIT 1`).length > 0; }
+export async function saveTinyfishKey(userId: string, key: string | null) {
+  // Keep a personal key available for the entire async run; otherwise a returning workflow could lose access.
+  return (await getSql()`UPDATE wallets SET tinyfish_key=${key}, updated_at=now() WHERE user_id=${userId}
+    AND NOT EXISTS(SELECT 1 FROM hunt_jobs j JOIN searches s ON s.id=j.search_id WHERE s.user_id=${userId} AND s.status='running' AND j.payload->>'useOwnKey'='true') RETURNING user_id`).length>0;
+}
 export async function getPreferences(userId: string) { return one<PreferenceRow>(await getSql()`SELECT user_id, role, profession, location_label, location_country_code, seniority, work_mode, visa, keywords, filters, updated_at FROM preferences WHERE user_id=${userId}`); }
 export async function savePreferences(userId: string, prefs: Omit<PreferenceRow, 'user_id' | 'updated_at'>) {
   const sql = getSql();
@@ -173,7 +186,7 @@ export async function bestMatches(userId: string, limit = 60) {
 export async function getSearchListings(id: string, userId?: string, includeHidden = false) { return rows<ListingRow>(await getSql()`SELECT id,search_id,user_id,dedupe_key,title,company,location,seniority,work_mode,visa_signal,snippet,apply_url,source_url,source_name,score,match_reasons,uncertainties,facts,fetched_at,hidden,hidden_reason FROM listings WHERE search_id=${id} AND (${userId ?? null}::text IS NULL OR user_id=${userId ?? null}) AND (${includeHidden} OR hidden=false) ORDER BY score DESC,company,title`); }
 export async function getSearchEvents(id: string) { return rows<SearchEventRow>(await getSql()`SELECT id,search_id,step,host,url,ok,detail,created_at FROM search_events WHERE search_id=${id} ORDER BY created_at,id`); }
 export async function findCachedSearch(userId: string, hash: string) { return one<SearchRow>(await getSql()`SELECT id,user_id,preference_snapshot,status,error,cache_hit,search_count,fetch_count,agent_count,created_at,finished_at FROM searches WHERE user_id=${userId} AND status='done' AND cache_hit=false AND preference_snapshot->>'hash'=${hash} AND preference_snapshot->>'deep' IS DISTINCT FROM 'true' AND created_at > now()-interval '15 minutes' AND EXISTS(SELECT 1 FROM listings l WHERE l.search_id=searches.id AND NOT l.hidden) ORDER BY created_at DESC LIMIT 1`); }
-export async function copyCachedListings(from: string, to: string, userId: string) { await getSql()`INSERT INTO listings(search_id,user_id,dedupe_key,title,company,location,seniority,work_mode,visa_signal,snippet,apply_url,source_url,source_name,score,match_reasons,uncertainties,facts,fetched_at,hidden,hidden_reason) SELECT ${to},${userId},dedupe_key,title,company,location,seniority,work_mode,visa_signal,snippet,apply_url,source_url,source_name,score,match_reasons,uncertainties,facts,fetched_at,hidden,hidden_reason FROM listings WHERE search_id=${from} AND user_id=${userId}`; }
+export async function copyCachedListings(from: string, to: string, userId: string) { await getSql()`INSERT INTO listings(search_id,user_id,dedupe_key,title,company,location,seniority,work_mode,visa_signal,snippet,apply_url,source_url,source_name,score,match_reasons,uncertainties,facts,fetched_at,hidden,hidden_reason) SELECT ${to},${userId},dedupe_key,title,company,location,seniority,work_mode,visa_signal,snippet,apply_url,source_url,source_name,score,match_reasons,uncertainties,facts,fetched_at,hidden,hidden_reason FROM listings WHERE search_id=${from} AND user_id=${userId} ON CONFLICT(search_id,dedupe_key) DO NOTHING`; }
 export async function previousDedupeKeys(userId: string, currentSearch: string) { return rows<{ dedupe_key: string }>(await getSql()`SELECT dedupe_key FROM listings WHERE search_id=(SELECT id FROM searches WHERE user_id=${userId} AND status='done' AND id<>${currentSearch} ORDER BY created_at DESC LIMIT 1)`).map(item => item.dedupe_key); }
 
 // Observatory queries select only what their server-rendered tables display.

@@ -121,6 +121,31 @@ INSERT INTO credit_ledger(user_id, delta, reason) SELECT w.user_id, w.credits, '
 UPDATE searches SET status='error', error='Closed during upgrade: duplicate running hunt.', finished_at=now() WHERE status='running' AND id NOT IN (SELECT DISTINCT ON (user_id) id FROM searches WHERE status='running' ORDER BY user_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS one_running_search_per_user ON searches(user_id) WHERE status='running';
 CREATE UNIQUE INDEX IF NOT EXISTS search_request_once ON searches(user_id, (preference_snapshot->>'request_id')) WHERE preference_snapshot->>'request_id' IS NOT NULL`,
+`CREATE TABLE IF NOT EXISTS hunt_jobs (
+  search_id UUID PRIMARY KEY REFERENCES searches(id) ON DELETE CASCADE,
+  payload JSONB NOT NULL,
+  checkpoint JSONB,
+  workflow_id TEXT,
+  dispatch_id TEXT,
+  dispatch_token UUID,
+  dispatch_after TIMESTAMPTZ NOT NULL DEFAULT now(),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hunt_jobs_dispatch ON hunt_jobs(dispatch_after);
+CREATE TABLE IF NOT EXISTS hunt_agents (
+  search_id UUID NOT NULL REFERENCES searches(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  marker TEXT NOT NULL,
+  run_id TEXT,
+  status TEXT NOT NULL DEFAULT 'launching' CHECK (status IN ('launching','pending','completed','failed','cancelled','unknown')),
+  result JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (search_id,url)
+);
+CREATE INDEX IF NOT EXISTS search_events_search_id ON search_events(search_id,id)`,
 ];
 
 let ready: Promise<void> | undefined;

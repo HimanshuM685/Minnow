@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { canonicalUrl, hardFilterLabels, normalizeFilters, type SearchEvent } from '@minnow/core';
-import { addSearchEvents, updateSourceHealth, copyCachedListings, startSearch, settleSearch, searchByRequest, SearchConflictError, ensureProfile, findCachedSearch, getPreferences, getResume, getWallet, hasRunningSearch, insertListings, patchSearchSnapshot, reconcileStaleSearches, spendCredits, addCredits, DEEP_SEARCH_COST, SEARCH_COST, skippedHosts } from '@minnow/db';
+import { canonicalUrl, hardFilterLabels, normalizeFilters, type SearchEvent, type SearchResult } from '@minnow/core';
+import { addSearchEvents, updateSourceHealth, copyCachedListings, startSearch, settleSearch, searchByRequest, SearchConflictError, ensureProfile, findCachedSearch, getPreferences, getResume, getWallet, hasRunningSearch, insertListings, patchSearchSnapshot, reconcileStaleSearches, DEEP_SEARCH_COST, SEARCH_COST, skippedHosts } from '@minnow/db';
 import { emptyStats, runSearch } from './pipeline';
 import { resumeSkills } from './resume';
 import { huntInputSchema, toPreferences, toRow, type HuntInput } from './hunt-input';
@@ -8,7 +8,7 @@ import { huntInputSchema, toPreferences, toRow, type HuntInput } from './hunt-in
 export class HuntInputError extends Error {}
 export class HuntCreditError extends HuntInputError {}
 export class HuntBusyError extends HuntInputError {}
-// Soft deadline for discovery. Must leave room inside the route's maxDuration for ranking and persistence.
+// Bounded Search/Fetch discovery step. Agent execution has its own durable lifecycle.
 export const HUNT_BUDGET_MS=150_000;
 export const DEEP_BUDGET_MS=240_000;
 export type HuntMessage = { type: 'started'; searchId: string } | { type: 'progress'; stage: string; message: string } | { type: 'complete'; found?: number; strict?: number; near?: number; relaxed?: string[]; dropped?: { filter: string; count: number }[]; searchId: string; counts: {search:number;fetch:number;agent:number}; cacheHit: boolean };
@@ -29,7 +29,8 @@ export async function prepareHunt(user: { id:string;name:string }, refresh:boole
   // A retried click must resolve to its first search before any "already running" check can reject it.
   if(requestId){const first=await searchByRequest(user.id,requestId); if(first) return {duplicateOf:first.id};}
   // Independent reads run together: one round trip of latency instead of six.
-  const [,running,saved,resume,excludedHosts,wallet]=await Promise.all([reconcileStaleSearches(user.id),hasRunningSearch(user.id),getPreferences(user.id),getResume(user.id),skippedHosts(),getWallet(user.id)]);
+  await reconcileStaleSearches(user.id); // only legacy, non-workflow hunts
+  const [running,saved,resume,excludedHosts,wallet]=await Promise.all([hasRunningSearch(user.id),getPreferences(user.id),getResume(user.id),skippedHosts(),getWallet(user.id)]);
   if(running) throw new HuntBusyError('A hunt is already running for your account. Wait for it to finish, then try again.');
   // The form wins even when unsaved; the saved row is the fallback (e.g. a plain refresh).
   const candidate=form ?? (saved ? {...saved,filters:normalizeFilters(saved.filters)} : null);
@@ -50,7 +51,9 @@ export async function prepareHunt(user: { id:string;name:string }, refresh:boole
   // costs DEEP_SEARCH_COST, a normal search 1, a cache replay or your own key 0. A retried click (same requestId)
   // returns the first click's search instead of charging again.
   let started;
-  try{ started=await startSearch({userId:user.id,snapshot:{...snapshot,deep},cacheHit:Boolean(cached),cost,reason:deep?'deep_search':'search',requestId}); }
+  // The outbox payload and charge commit together. API keys stay in the wallet/ENV, never in snapshots or workflow inputs.
+  const job={user,input,skills,cached:cached?{id:cached.id}:null,cost,useOwnKey:Boolean(ownKey),excludedHosts,deep,maxAgentRuns:deep?5:limit(process.env.MAX_AGENT_RUNS,2,0,2)};
+  try{ started=await startSearch({userId:user.id,snapshot:{...snapshot,deep},cacheHit:Boolean(cached),cost,reason:deep?'deep_search':'search',requestId,job}); }
   catch(error){ if(error instanceof SearchConflictError) throw new HuntBusyError('A hunt is already running for your account. Wait for it to finish, then try again.'); throw error; }
   if(!started) throw new HuntCreditError((deep?`Deep Search costs ${DEEP_SEARCH_COST} credits and you have fewer. `:'You are out of credits. ')+'Message @HimanshuM685 on Telegram for more, or add your own TinyFish API key on the Credits page.');
   if(started.existing) return {duplicateOf:started.search.id};
@@ -100,7 +103,7 @@ export async function runHunt(prepared:PreparedHunt, signal:AbortSignal, send:(e
     const apiKey=ownKey??process.env.TINYFISH_API_KEY?.trim();
     if(!apiKey) throw new Error('Search is not configured: add your own TinyFish key on the Credits page.');
     const preferences=toPreferences(input,skills);
-    const result=await runSearch(preferences,run.id,apiKey,workSignal,emit,{maxAgentRuns:deep?5:limit(process.env.MAX_AGENT_RUNS,2,0,2),agentDuration:deep?90:limit(process.env.AGENT_DURATION_SECONDS,60,30,120),budgetMs:deep?DEEP_BUDGET_MS:HUNT_BUDGET_MS,deep,skippedHosts:excludedHosts,stats});
+    const result=await runSearch(preferences,run.id,apiKey,workSignal,emit,{maxAgentRuns:deep?5:limit(process.env.MAX_AGENT_RUNS,2,0,2),agentDuration:0,budgetMs:deep?DEEP_BUDGET_MS:HUNT_BUDGET_MS,deep,skippedHosts:excludedHosts,stats});
     await writes;
     if(writeError) throw writeError;
     workSignal.throwIfAborted();
@@ -122,4 +125,14 @@ export async function runHunt(prepared:PreparedHunt, signal:AbortSignal, send:(e
     await settle('error',message,{search:stats.searchRequests,fetch:stats.fetchRequests,agent:stats.agentRuns},true);
     throw new Error(message);
   }
+}
+
+// Shared, retry-safe result writes. Completion/refund remains a single guarded transition.
+export async function persistHuntResult(id: string, userId: string, result: SearchResult) {
+  const dropped=Object.entries(result.drops).sort((a,b)=>b[1]-a[1]).map(([key,count])=>({filter:hardFilterLabels[key]??key,count}));
+  await Promise.all([
+    patchSearchSnapshot(id,{hard_filter_drops:result.drops,hard_filter_drop_total:dropped.reduce((n,item)=>n+item.count,0),strict:result.strict,near:result.near,relaxed:result.relaxed}),
+    insertListings(result.listings.map(job=>({userId,searchId:id,dedupeKey:canonicalUrl(job.apply_url),title:job.title,company:job.company,location:job.location,seniority:job.seniority,workMode:job.work_mode,visaSignal:job.visa_signal,snippet:job.snippet,applyUrl:job.apply_url,sourceUrl:job.source_url,sourceName:job.source_name,score:job.match_score,matchReasons:job.match_reasons,uncertainties:job.uncertainties,facts:job.facts,fetchedAt:job.checked_at}))),
+  ]);
+  await settleSearch(id,'done',null,{search:result.stats.searchRequests,fetch:result.stats.fetchRequests,agent:result.stats.agentRuns},result.listings.length===0);
 }

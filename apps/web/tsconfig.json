@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./*"] }, "plugins": [{ "name": "next" }], "incremental": true },
+  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./*"] }, "plugins": [{ "name": "next" }, { "name": "workflow" }], "incremental": true },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", ".next/dev/types/**/*.ts"],
   "exclude": ["node_modules"]
 }

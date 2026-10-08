@@ -18,7 +18,8 @@ async function Header() {
 export default function SiteLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <Suspense fallback={<SiteHeader user={null} signOut={signOut} />}><Header /></Suspense>
+      {/* A client header as both Suspense fallback and resolved content can briefly hydrate twice under PPR. */}
+      <Suspense fallback={<div aria-hidden="true" />}><Header /></Suspense>
       <Suspense>{children}</Suspense>
       <footer className="site-footer page-width">
         <span><Fish small />Small fish. Big possibilities.</span>

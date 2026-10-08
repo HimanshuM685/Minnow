@@ -6,12 +6,13 @@ const ENOUGH_LISTINGS = MIN_RESULTS;
 export function emptyStats(): RunStats {
   return { searchRequests: 0, fetchRequests: 0, fetchedPages: 0, agentRuns: 0, discoveredUrls: 0, extracted: 0, duplicatesRemoved: 0, filteredOut: 0, companies: 0, durationMs: 0 };
 }
+export interface DiscoveryResult extends SearchResult { agentTargets: string[]; unranked: Listing[]; }
 
 export async function runSearch(
   prefs: Preferences, runId: string, key: string, signal: AbortSignal,
   emit: (event: SearchEvent) => void,
-  config: { maxAgentRuns: number; agentDuration: number; budgetMs?: number; deep?: boolean; skippedHosts?: string[]; stats?: RunStats },
-): Promise<SearchResult> {
+  config: { maxAgentRuns: number; agentDuration: number; deferAgents?: boolean; budgetMs?: number; deep?: boolean; skippedHosts?: string[]; stats?: RunStats },
+): Promise<DiscoveryResult> {
   const started = Date.now();
   const stats = config.stats ?? emptyStats();
   // `signal` is the user/hard abort; `budget` is a soft deadline. When it expires in-flight TinyFish calls are cut
@@ -169,11 +170,10 @@ export async function runSearch(
   }
   const agentPages = diversify([...distinctBoards.values()], scanLimit);
   const agentCompanies = new Set<string>();
-  // Agent scans run concurrently and only with the time actually left in the budget.
-  const remainingSeconds = Math.floor(((config.budgetMs ?? 200_000) - (Date.now() - started)) / 1000) - 20;
-  const agentSeconds = Math.min(config.agentDuration, remainingSeconds);
-  const scans = agentSeconds >= 30 ? agentPages : [];
-  if (agentPages.length && !scans.length) progress('agent', 'Skipping Agent scans: not enough time left in this hunt.');
+  // Durable execution defers selected Agents to independent launch/poll steps. Never shrink an Agent's lifetime
+  // to the remaining discovery budget. The standalone verifier also observes async runs without cancelling them.
+  const scans = config.deferAgents ? [] : agentPages;
+  const agentClient = new TinyFishClient(key,stats,signal);
   await Promise.all(scans.map(async candidate => {
     signal.throwIfAborted();
     if (agentCompanies.has(companyKey(candidate.url))) return;
@@ -181,7 +181,7 @@ export async function runSearch(
     const host = new URL(candidate.url).hostname;
     progress('agent', `Scanning ${host} with TinyFish Agent…`);
     try {
-      const result = await client.agent(candidate.url, prefs, agentSeconds, message => progress('agent', `${host}: ${message}`));
+      const result = await agentClient.agent(candidate.url, prefs, config.agentDuration, message => progress('agent', `${host}: ${message}`));
       const jobs = extractAgent(result, candidate.url, prefs.filters.skills);
       raw.push(...jobs);
       report({ url: candidate.url, name: host, stage: 'agent', status: jobs.length ? 'ok' : 'empty', message: jobs.length ? `${jobs.length} openings extracted by Agent` : 'Agent found no structured matching openings', count: jobs.length });
@@ -192,7 +192,7 @@ export async function runSearch(
     }
   }));
   for (const candidate of stubborn.values()) {
-    if (agentCompanies.has(companyKey(candidate.url))) continue;
+    if (agentCompanies.has(companyKey(candidate.url)) || config.deferAgents && agentPages.some(page=>companyKey(page.url)===companyKey(candidate.url))) continue;
     report({ url: candidate.url, name: new URL(candidate.url).hostname, stage: 'agent', status: 'skipped', message: enough ? 'Skipped: enough openings already found' : !scanLimit ? 'Agent scanning is disabled' : scans.length ? 'Agent run cap reached' : 'Not enough time left for an Agent scan', count: 0 });
   }
   // Deep only: open the detail page of the best board-only listings so location, level, pay and dates are known
@@ -225,7 +225,7 @@ export async function runSearch(
     }
   }
   signal.throwIfAborted();
-  if (candidates.length && !raw.length && stats.fetchedPages===0 && !reports.some(item=>item.stage==='agent' && ['ok','empty'].includes(item.status))) {
+  if (candidates.length && !raw.length && stats.fetchedPages===0 && !(config.deferAgents && agentPages.length) && !reports.some(item=>item.stage==='agent' && ['ok','empty'].includes(item.status))) {
     throw new TinyFishError('No careers page could be read. Review the source failures and retry.');
   }
   progress('rank', 'Removing duplicates and matching your preferences…');
@@ -235,5 +235,5 @@ export async function runSearch(
   stats.filteredOut = matched.filteredOut;
   stats.companies = new Set(matched.listings.map(job => job.company.toLowerCase())).size;
   stats.durationMs = Date.now() - started;
-  return { runId, preferences: prefs, listings: matched.listings.slice(0, 60), reports, stats, checkedAt: new Date().toISOString(), cached: false, drops: matched.drops, strict: matched.strict, near: matched.near, relaxed: matched.relaxed };
+  return { runId, preferences: prefs, listings: matched.listings.slice(0, 60), reports, stats, checkedAt: new Date().toISOString(), cached: false, drops: matched.drops, strict: matched.strict, near: matched.near, relaxed: matched.relaxed, agentTargets: config.deferAgents ? agentPages.map(page=>page.url) : [], unranked: raw.filter(job=>!stale.has(canonicalUrl(job.apply_url))) };
 }

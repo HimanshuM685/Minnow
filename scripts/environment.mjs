@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 
-const webKeys = ['NEON_AUTH_BASE_URL', 'NEON_AUTH_COOKIE_SECRET', 'DATABASE_URL', 'OBSERVATORY_ADMIN_EMAILS', 'ADMIN_ACCESS_KEY', 'NEON_AUTH_COOKIE_DOMAIN', 'TINYFISH_API_KEY', 'NEON_AUTH_GOOGLE_ENABLED', 'MAX_AGENT_RUNS', 'AGENT_DURATION_SECONDS'];
+const webKeys = ['NEON_AUTH_BASE_URL', 'NEON_AUTH_COOKIE_SECRET', 'DATABASE_URL', 'OBSERVATORY_ADMIN_EMAILS', 'ADMIN_ACCESS_KEY', 'NEON_AUTH_COOKIE_DOMAIN', 'TINYFISH_API_KEY', 'NEON_AUTH_GOOGLE_ENABLED', 'MAX_AGENT_RUNS', 'CRON_SECRET'];
 const value = (entry) => typeof entry === 'string' ? entry.trim() : '';
 
 // Compute a setup without overwriting existing app-local credentials.

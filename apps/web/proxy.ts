@@ -14,4 +14,4 @@ export default async function proxy(request: NextRequest) {
   }
   return response;
 }
-export const config = { matcher: ['/((?!_next/|api/|favicon.ico|minnow.svg).*)'] };
+export const config = { matcher: ['/((?!_next/|api/|\\.well-known/workflow/|favicon.ico|minnow.svg).*)'] };

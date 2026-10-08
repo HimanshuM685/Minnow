@@ -30,17 +30,13 @@ test('pipeline reads selected job details in small parallel batches, escalates a
         : '# Software Engineer Intern\n\nLocation: London\n\n## The role\n\nBuild Python services for customers, learn from experienced engineers and ship products that improve how teams work. You will collaborate with engineers on software development. Apply for this position today.' }));
       return Response.json({ results, errors: urls.includes(closed) ? [{ url: closed, error: 'page_not_found', status: 404 }] : [] });
     }
-    if (url.endsWith('/run-sse')) {
+    if (url.endsWith('/run-async')) {
       assert.equal(body?.url, ashby);
       assert.ok(body?.output_schema);
-      assert.deepEqual(body?.agent_config, { max_duration_seconds: 30 });
-      const events = [
-        { type: 'STARTED', run_id: 'agent-123' },
-        { type: 'PROGRESS', purpose: 'Filtering by engineering internships' },
-        { type: 'COMPLETE', status: 'COMPLETED', result: { listings: [{ title: 'Software Engineer Intern', company: 'Beta', location: 'London', apply_url: agentJob, snippet: 'Work with Python services.', visa_evidence: '', visa_signal: 'unknown', seniority: 'intern', work_mode: 'unknown' }] } },
-      ];
-      return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+      assert.equal(body?.agent_config, undefined, 'no automatic wall-clock cutoff');
+      return Response.json({run_id:'agent-123',error:null});
     }
+    if(url.includes('/runs/agent-123')) return Response.json({run_id:'agent-123',status:'COMPLETED',result:{listings:[{ title: 'Software Engineer Intern', company: 'Beta', location: 'London', apply_url: agentJob, snippet: 'Work with Python services.', visa_evidence: '', visa_signal: 'unknown', seniority: 'intern', work_mode: 'unknown' }]}});
     throw new Error(`Unexpected request ${url}`);
   });
   try {
@@ -74,7 +70,7 @@ test('Observatory-skipped hosts are dropped before Fetch and the decision is tra
   }finally{fetchMock.mock.restore();}
 });
 
-test('cancelling an active Agent scan cancels the upstream run', async () => {
+test('stopping an Agent observer never cancels the upstream run', async () => {
   const { TinyFishClient } = await import('../../../apps/web/lib/tinyfish.js');
   const { emptyStats } = await import('../../../apps/web/lib/pipeline.js');
   const controller = new AbortController();
@@ -82,17 +78,13 @@ test('cancelling an active Agent scan cancels the upstream run', async () => {
   const mocked = mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     calls.push(url);
-    if (url.endsWith('/cancel')) return Response.json({ status: 'CANCELLED' });
-    return new Response(new ReadableStream<Uint8Array>({
-      start(stream) {
-        stream.enqueue(new TextEncoder().encode('data: {"type":"STARTED","run_id":"cancel-me"}\n\ndata: {"type":"PROGRESS","purpose":"Loading"}\n\n'));
-        init?.signal?.addEventListener('abort', () => stream.error(new DOMException('Aborted', 'AbortError')), { once: true });
-      },
-    }));
+    if(url.endsWith('/run-async')) {const body=JSON.parse(String(init?.body));assert.equal(body.agent_config,undefined);return Response.json({run_id:'keep-running',error:null});}
+    return Response.json({run_id:'keep-running',status:'RUNNING',steps:[{action:'Loading'}]});
   });
   try {
     const client = new TinyFishClient('test-key', emptyStats(), controller.signal);
     await assert.rejects(client.agent('https://jobs.ashbyhq.com/acme', { ...defaultPreferences, role: 'Engineer' }, 30, () => controller.abort()));
-    assert.ok(calls.some(url => url.endsWith('/runs/cancel-me/cancel')));
+    assert.ok(calls.some(url => url.includes('/runs/keep-running')));
+    assert.equal(calls.filter(url=>url.endsWith('/cancel')).length,0);
   } finally { mocked.mock.restore(); }
 });
